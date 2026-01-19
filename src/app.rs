@@ -12,13 +12,15 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::fs;
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoop};
+#[cfg(target_os = "macos")]
+use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::MenuEvent;
 
 #[derive(Debug, Clone)]
@@ -33,6 +35,7 @@ enum AppState {
 enum WorkerEvent {
     ModelReady(PathBuf),
     ModelProgress(u8),
+    TranscriptionProgress(u8),
     TranscriptionDone { text: String },
     Error(String),
 }
@@ -55,6 +58,7 @@ fn run_transcribe(args: TranscribeArgs) -> Result<()> {
     let output = storage::transcript_path_for_input(&args.input)?;
     fs::write(&output, &text)
         .with_context(|| format!("write transcript {}", output.display()))?;
+    println!("{text}");
     tracing::info!(output = %output.display(), "transcription complete");
     Ok(())
 }
@@ -105,9 +109,13 @@ struct App {
 
 impl App {
     fn event_loop(mut self) -> Result<()> {
-        let event_loop = EventLoop::<()>::new();
+        let mut event_loop = EventLoop::<()>::new();
+        #[cfg(target_os = "macos")]
+        {
+            event_loop.set_activation_policy(ActivationPolicy::Accessory);
+        }
         let hotkey_manager = GlobalHotKeyManager::new().context("init hotkey manager")?;
-        let hotkey = HotKey::new(Some(Modifiers::META), Code::Space);
+        let hotkey = HotKey::new(Some(Modifiers::ALT), Code::Space);
         hotkey_manager
             .register(hotkey)
             .context("register Command+Space")?;
@@ -122,7 +130,7 @@ impl App {
                 }
                 Event::MainEventsCleared => {
                     while let Ok(ev) = hotkey_rx.try_recv() {
-                        if ev.id == hotkey.id() {
+                        if ev.id == hotkey.id() && ev.state == HotKeyState::Pressed {
                             if let Err(err) = self.handle_hotkey() {
                                 tracing::error!(error = %err, "hotkey handler failed");
                             }
@@ -160,6 +168,9 @@ impl App {
                 }
                 self.store.save(&self.config)?;
             }
+            TrayAction::ToggleRecording => {
+                self.handle_hotkey()?;
+            }
         }
         Ok(())
     }
@@ -180,10 +191,17 @@ impl App {
             }
             WorkerEvent::TranscriptionDone { text } => {
                 tracing::info!("transcription done");
+                println!("{text}");
                 let mut clipboard = Clipboard::new()?;
                 clipboard.set_text(&text)?;
                 self.state = AppState::Idle;
                 self.tray.set_state(TrayState::Idle)?;
+            }
+            WorkerEvent::TranscriptionProgress(pct) => {
+                if matches!(self.state, AppState::Transcribing) {
+                    self.tray
+                        .set_state(TrayState::Transcribing { progress: Some(pct) })?;
+                }
             }
             WorkerEvent::Error(err) => {
                 tracing::error!(error = %err, "worker error");
@@ -217,7 +235,6 @@ impl App {
 
     fn stop_recording(&mut self) -> Result<()> {
         tracing::info!("stop recording");
-        beep::play().ok();
         let handle = self.recording.take().context("no recording in progress")?;
         let recordings_dir = self.recordings_dir.clone();
         let model_path = self.model_path.clone().context("model not ready")?;
@@ -230,10 +247,21 @@ impl App {
         thread::spawn(move || {
             let result: Result<()> = (|| {
                 let recorded = handle.stop()?;
+                beep::play().ok();
                 let (audio_path, text_path) = storage::next_recording_paths(&recordings_dir)?;
                 encode_m4a(&recorded, &audio_path)?;
                 let transcriber = WhisperTranscriber::new(model_path)?;
-                let text = transcriber.transcribe_file(&audio_path)?;
+                let worker_progress = worker_tx.clone();
+                let mut last_pct: Option<i32> = None;
+                let text = transcriber.transcribe_file_with_progress(&audio_path, Some(move |pct| {
+                    if last_pct == Some(pct) {
+                        return;
+                    }
+                    last_pct = Some(pct);
+                    let _ = worker_progress.send(WorkerEvent::TranscriptionProgress(
+                        pct.clamp(0, 100) as u8,
+                    ));
+                }))?;
                 fs::write(&text_path, &text).with_context(|| {
                     format!("write transcript {}", text_path.display())
                 })?;
@@ -268,7 +296,5 @@ fn spawn_model_download(models_dir: PathBuf, model: String, tx: Sender<WorkerEve
 }
 
 fn default_models_dir() -> Result<PathBuf> {
-    let proj = directories::ProjectDirs::from("com", "dictate", "dictate-2")
-        .context("resolve data dir")?;
-    Ok(proj.data_dir().join("models"))
+    Ok(PathBuf::from(".models"))
 }

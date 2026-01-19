@@ -1,5 +1,6 @@
 /target
 /.recordings
+/.models
 .DS_Store
 **/*.rs.bk
 *.swp

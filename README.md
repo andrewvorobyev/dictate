@@ -13,6 +13,8 @@ transcripts are stored under `.recordings`.
   - `brew install cmake`
 - FFmpeg (used for M4A encoding via CLI):
   - `brew install ffmpeg`
+- just (task runner):
+  - `brew install just`
 
 ## Build
 ```bash
