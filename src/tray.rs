@@ -174,14 +174,30 @@ impl TrayIcons {
 fn icon_idle_mic() -> Result<Icon> {
     let mut canvas = empty_canvas();
     let black = [0, 0, 0, 255];
-    let cx = (ICON_SIZE / 2) as i32;
-    let top = 2;
-    draw_capsule(&mut canvas, cx, top, 18, 26, black);
-    draw_rect(&mut canvas, cx - 1, top + 26, 2, 13, black);
-    draw_rect(&mut canvas, cx - 9, 41, 18, 2, black);
-    draw_rect(&mut canvas, cx - 6, top + 6, 12, 1, [0, 0, 0, 180]);
-    draw_rect(&mut canvas, cx - 6, top + 9, 12, 1, [0, 0, 0, 180]);
-    draw_rect(&mut canvas, cx - 6, top + 12, 12, 1, [0, 0, 0, 180]);
+    let dark_gray = [40, 40, 40, 255];
+    let cx = ICON_SIZE as f32 / 2.0;
+
+    // Microphone body - elegant capsule shape
+    draw_capsule_aa(&mut canvas, cx, 4.0, 16.0, 24.0, black);
+
+    // Subtle highlight on left side of mic body for depth
+    draw_capsule_aa(&mut canvas, cx - 3.0, 6.0, 3.0, 18.0, [255, 255, 255, 35]);
+
+    // Microphone grille lines - delicate horizontal lines
+    for i in 0..4 {
+        let y = 10.0 + i as f32 * 4.0;
+        draw_line_h_aa(&mut canvas, cx - 5.0, y, 10.0, [255, 255, 255, 90]);
+    }
+
+    // Stand/stem - tapered elegant stem
+    draw_rect_aa(&mut canvas, cx - 1.5, 28.0, 3.0, 8.0, black);
+
+    // Curved arm holding the mic
+    draw_arc_aa(&mut canvas, cx, 28.0, 10.0, 0.0, std::f32::consts::PI, 2.5, dark_gray);
+
+    // Base - solid horizontal bar
+    draw_rect_aa(&mut canvas, cx - 10.0, 40.0, 20.0, 2.5, black);
+
     Icon::from_rgba(canvas, ICON_SIZE as u32, ICON_SIZE as u32).context("build idle icon")
 }
 
@@ -226,14 +242,6 @@ fn set_pixel(canvas: &mut [u8], x: i32, y: i32, color: [u8; 4]) {
     canvas[idx..idx + 4].copy_from_slice(&color);
 }
 
-fn draw_rect(canvas: &mut [u8], x: i32, y: i32, w: i32, h: i32, color: [u8; 4]) {
-    for yy in y..(y + h) {
-        for xx in x..(x + w) {
-            set_pixel(canvas, xx, yy, color);
-        }
-    }
-}
-
 fn draw_circle(canvas: &mut [u8], cx: i32, cy: i32, r: i32, color: [u8; 4]) {
     let r2 = r * r;
     for y in (cy - r)..=(cy + r) {
@@ -245,14 +253,6 @@ fn draw_circle(canvas: &mut [u8], cx: i32, cy: i32, r: i32, color: [u8; 4]) {
             }
         }
     }
-}
-
-fn draw_capsule(canvas: &mut [u8], cx: i32, y: i32, w: i32, h: i32, color: [u8; 4]) {
-    let r = w / 2;
-    let mid_h = h - w;
-    draw_circle(canvas, cx, y + r, r, color);
-    draw_circle(canvas, cx, y + r + mid_h, r, color);
-    draw_rect(canvas, cx - r, y + r, w, mid_h, color);
 }
 
 fn draw_ring(canvas: &mut [u8], cx: i32, cy: i32, r_outer: i32, r_inner: i32, color: [u8; 4]) {
@@ -292,3 +292,141 @@ fn draw_wedge(canvas: &mut [u8], cx: i32, cy: i32, r: i32, angle: f32, color: [u
         }
     }
 }
+
+// Alpha-blend a color onto the canvas at (x, y)
+fn blend_pixel(canvas: &mut [u8], x: i32, y: i32, color: [u8; 4], alpha: f32) {
+    if x < 0 || y < 0 || x >= ICON_SIZE as i32 || y >= ICON_SIZE as i32 {
+        return;
+    }
+    let idx = ((y as usize) * ICON_SIZE + (x as usize)) * 4;
+    let a = (color[3] as f32 / 255.0) * alpha;
+    if a <= 0.0 {
+        return;
+    }
+
+    let dst_r = canvas[idx] as f32;
+    let dst_g = canvas[idx + 1] as f32;
+    let dst_b = canvas[idx + 2] as f32;
+    let dst_a = canvas[idx + 3] as f32 / 255.0;
+
+    let src_r = color[0] as f32;
+    let src_g = color[1] as f32;
+    let src_b = color[2] as f32;
+
+    let out_a = a + dst_a * (1.0 - a);
+    if out_a > 0.0 {
+        canvas[idx] = ((src_r * a + dst_r * dst_a * (1.0 - a)) / out_a) as u8;
+        canvas[idx + 1] = ((src_g * a + dst_g * dst_a * (1.0 - a)) / out_a) as u8;
+        canvas[idx + 2] = ((src_b * a + dst_b * dst_a * (1.0 - a)) / out_a) as u8;
+        canvas[idx + 3] = (out_a * 255.0) as u8;
+    }
+}
+
+// Anti-aliased circle
+fn draw_circle_aa(canvas: &mut [u8], cx: f32, cy: f32, r: f32, color: [u8; 4]) {
+    let x_min = (cx - r - 1.0).floor() as i32;
+    let x_max = (cx + r + 1.0).ceil() as i32;
+    let y_min = (cy - r - 1.0).floor() as i32;
+    let y_max = (cy + r + 1.0).ceil() as i32;
+
+    for y in y_min..=y_max {
+        for x in x_min..=x_max {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let alpha = (r - dist + 0.5).clamp(0.0, 1.0);
+            if alpha > 0.0 {
+                blend_pixel(canvas, x, y, color, alpha);
+            }
+        }
+    }
+}
+
+// Anti-aliased rectangle
+fn draw_rect_aa(canvas: &mut [u8], x: f32, y: f32, w: f32, h: f32, color: [u8; 4]) {
+    let x_min = (x - 0.5).floor() as i32;
+    let x_max = (x + w + 0.5).ceil() as i32;
+    let y_min = (y - 0.5).floor() as i32;
+    let y_max = (y + h + 0.5).ceil() as i32;
+
+    for py in y_min..=y_max {
+        for px in x_min..=x_max {
+            let px_f = px as f32;
+            let py_f = py as f32;
+
+            // Calculate coverage
+            let left = (px_f + 1.0 - x).clamp(0.0, 1.0);
+            let right = (x + w - px_f).clamp(0.0, 1.0);
+            let top = (py_f + 1.0 - y).clamp(0.0, 1.0);
+            let bottom = (y + h - py_f).clamp(0.0, 1.0);
+
+            let alpha = left * right * top * bottom;
+            if alpha > 0.0 {
+                blend_pixel(canvas, px, py, color, alpha);
+            }
+        }
+    }
+}
+
+// Anti-aliased capsule (rounded rectangle for microphone body)
+fn draw_capsule_aa(canvas: &mut [u8], cx: f32, y: f32, w: f32, h: f32, color: [u8; 4]) {
+    let r = w / 2.0;
+    let mid_h = h - w;
+
+    // Top circle
+    draw_circle_aa(canvas, cx, y + r, r, color);
+    // Bottom circle
+    draw_circle_aa(canvas, cx, y + r + mid_h, r, color);
+    // Middle rectangle
+    draw_rect_aa(canvas, cx - r, y + r, w, mid_h, color);
+}
+
+// Anti-aliased horizontal line
+fn draw_line_h_aa(canvas: &mut [u8], x: f32, y: f32, w: f32, color: [u8; 4]) {
+    draw_rect_aa(canvas, x, y, w, 1.0, color);
+}
+
+// Anti-aliased arc (stroke only)
+fn draw_arc_aa(
+    canvas: &mut [u8],
+    cx: f32,
+    cy: f32,
+    r: f32,
+    start_angle: f32,
+    end_angle: f32,
+    thickness: f32,
+    color: [u8; 4],
+) {
+    let r_outer = r + thickness / 2.0;
+    let r_inner = r - thickness / 2.0;
+    let x_min = (cx - r_outer - 1.0).floor() as i32;
+    let x_max = (cx + r_outer + 1.0).ceil() as i32;
+    let y_min = (cy - r_outer - 1.0).floor() as i32;
+    let y_max = (cy + r_outer + 1.0).ceil() as i32;
+
+    for y in y_min..=y_max {
+        for x in x_min..=x_max {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            let dist = (dx * dx + dy * dy).sqrt();
+
+            // Check if within ring
+            let outer_alpha = (r_outer - dist + 0.5).clamp(0.0, 1.0);
+            let inner_alpha = (dist - r_inner + 0.5).clamp(0.0, 1.0);
+            let ring_alpha = outer_alpha * inner_alpha;
+
+            if ring_alpha > 0.0 {
+                // Check angle
+                let angle = dy.atan2(dx);
+                let mut a = angle;
+                if a < start_angle {
+                    a += std::f32::consts::TAU;
+                }
+                if a >= start_angle && a <= end_angle + start_angle {
+                    blend_pixel(canvas, x, y, color, ring_alpha);
+                }
+            }
+        }
+    }
+}
+
