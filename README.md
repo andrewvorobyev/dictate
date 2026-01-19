@@ -1,6 +1,6 @@
-# Dictate 2
+# Dictate
 
-Dictate 2 is a macOS-only background transcription app. It sits in the menu bar,
+Dictate is a macOS-only background transcription app. It sits in the menu bar,
 listens for the global hotkey (Command+Space) to start/stop recording, transcribes
 audio with Whisper, and copies the result to the clipboard. Recordings and
 transcripts are stored under `.recordings`.

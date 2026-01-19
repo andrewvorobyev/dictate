@@ -74,7 +74,7 @@ impl TrayController {
         let icons = TrayIcons::new()?;
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("Dictate 2")
+            .with_tooltip("Dictate")
             .with_icon(icons.idle.clone())
             .build()
             .context("create tray icon")?;

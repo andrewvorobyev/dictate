@@ -1,7 +1,7 @@
 use anyhow::Result;
-use dictate_2::audio::{encode_m4a, CpalRecorder};
-use dictate_2::model;
-use dictate_2::transcriber::WhisperTranscriber;
+use dictate::audio::{encode_m4a, CpalRecorder};
+use dictate::model;
+use dictate::transcriber::WhisperTranscriber;
 use std::fs;
 use std::thread;
 use std::time::Duration;

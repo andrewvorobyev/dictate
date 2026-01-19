@@ -614,7 +614,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dictate-2"
+name = "dictate"
 version = "0.1.0"
 dependencies = [
  "anyhow",

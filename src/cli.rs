@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "dictate-2", version, about = "Background transcription app")]
+#[command(name = "dictate", version, about = "Background transcription app")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

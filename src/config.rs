@@ -28,7 +28,7 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     pub fn new() -> Result<Self> {
-        let proj = ProjectDirs::from("com", "dictate", "dictate-2")
+        let proj = ProjectDirs::from("com", "dictate", "dictate")
             .context("unable to resolve config directory")?;
         let path = proj.config_dir().join("config.toml");
         Ok(Self { path })
