@@ -28,6 +28,13 @@ just run
 cargo run -- run
 ```
 
+## Permissions (macOS)
+Because the app runs from your terminal, macOS will prompt for permissions tied to the
+terminal app you launch it from.
+
+- Microphone: required for recording audio.
+- Accessibility (or Input Monitoring): required for the global hotkey.
+
 ## Transcribe a file
 ```bash
 just transcribe /path/to/audio.m4a
