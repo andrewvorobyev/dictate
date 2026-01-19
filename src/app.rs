@@ -46,6 +46,7 @@ pub fn run() -> Result<()> {
     match cli.command.unwrap_or(Commands::Run(RunArgs::default())) {
         Commands::Run(args) => run_daemon(args),
         Commands::Transcribe(args) => run_transcribe(args),
+        Commands::Models => list_models(),
     }
 }
 
@@ -60,6 +61,56 @@ fn run_transcribe(args: TranscribeArgs) -> Result<()> {
         .with_context(|| format!("write transcript {}", output.display()))?;
     println!("{text}");
     tracing::info!(output = %output.display(), "transcription complete");
+    Ok(())
+}
+
+fn list_models() -> Result<()> {
+    let models = model::available_models();
+    if models.is_empty() {
+        println!("No models available.");
+        return Ok(());
+    }
+
+    let size_labels: Vec<String> = models
+        .iter()
+        .map(|info| model::format_size(info.size_bytes))
+        .collect();
+    let name_width = models
+        .iter()
+        .map(|info| info.name.len())
+        .max()
+        .unwrap_or(0)
+        .max("model".len());
+    let size_width = size_labels
+        .iter()
+        .map(|size| size.len())
+        .max()
+        .unwrap_or(0)
+        .max("size".len());
+    let languages_width = models
+        .iter()
+        .map(|info| info.languages.label().len())
+        .max()
+        .unwrap_or(0)
+        .max("languages".len());
+
+    println!("Available models:");
+    println!(
+        "  {name:<name_width$}  {size:>size_width$}  {langs:<languages_width$}  {desc}",
+        name = "model",
+        size = "size",
+        langs = "languages",
+        desc = "description",
+    );
+    for (info, size_label) in models.iter().zip(size_labels.iter()) {
+        println!(
+            "  {name:<name_width$}  {size:>size_width$}  {langs:<languages_width$}  {desc}",
+            name = info.name,
+            size = size_label,
+            langs = info.languages.label(),
+            desc = info.description,
+        );
+    }
     Ok(())
 }
 

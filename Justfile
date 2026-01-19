@@ -10,3 +10,6 @@ run *args="":
 
 transcribe file *args="":
     cargo run -- transcribe --input {{file}} {{args}}
+
+models:
+    cargo run -- models

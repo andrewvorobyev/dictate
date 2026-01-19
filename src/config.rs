@@ -15,7 +15,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             selected_mic: None,
-            model: "turbo".to_string(),
+            model: "small".to_string(),
             recordings_dir: PathBuf::from(".recordings"),
         }
     }
