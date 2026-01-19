@@ -49,6 +49,17 @@ impl CpalRecorder {
         Ok(devices)
     }
 
+    pub fn default_device_name() -> Result<Option<String>> {
+        let host = cpal::default_host();
+        let device = host.default_input_device();
+        if let Some(device) = device {
+            let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+            Ok(Some(name))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn start_recording(selected_device: Option<&str>) -> Result<RecordingHandle> {
         let host = cpal::default_host();
         let device = if let Some(name) = selected_device {

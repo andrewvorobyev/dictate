@@ -17,7 +17,7 @@ pub enum TrayState {
 #[derive(Debug, Clone)]
 pub enum TrayAction {
     Quit,
-    SelectMic(String),
+    SelectMic(Option<String>),
     ToggleRecording,
 }
 
@@ -25,6 +25,7 @@ pub struct TrayController {
     tray: TrayIcon,
     status_item: MenuItem,
     start_stop_item: MenuItem,
+    default_mic_item: CheckMenuItem,
     mic_items: HashMap<MenuId, (String, CheckMenuItem)>,
     quit_id: MenuId,
     icons: TrayIcons,
@@ -37,18 +38,15 @@ struct TrayIcons {
 }
 
 impl TrayController {
-    pub fn new(devices: &[AudioDevice], current_mic: Option<&str>) -> Result<Self> {
+    pub fn new(
+        devices: &[AudioDevice],
+        current_mic: Option<&str>,
+        default_mic_label: Option<&str>,
+    ) -> Result<Self> {
         let status_item = MenuItem::new("Status: Idle", false, None);
         let start_stop_item = MenuItem::new("Start Recording (Option+Space)", true, None);
         let quit_item = PredefinedMenuItem::quit(None);
         let quit_id = quit_item.id().clone();
-
-        let mut mic_items = HashMap::new();
-        for dev in devices {
-            let checked = current_mic.map(|m| m == dev.name).unwrap_or(false);
-            let item = CheckMenuItem::new(dev.name.clone(), true, checked, None);
-            mic_items.insert(item.id().clone(), (dev.name.clone(), item.clone()));
-        }
 
         let menu = Menu::new();
         menu.append(&status_item)?;
@@ -56,8 +54,19 @@ impl TrayController {
         menu.append(&PredefinedMenuItem::separator())?;
         let mic_header = MenuItem::new("Microphones", false, None);
         menu.append(&mic_header)?;
-        for (_id, (_name, item)) in &mic_items {
-            menu.append(item)?;
+        let default_label = match default_mic_label {
+            Some(name) => format!("System Default ({name})"),
+            None => "System Default".to_string(),
+        };
+        let default_mic_item =
+            CheckMenuItem::new(default_label, true, current_mic.is_none(), None);
+        menu.append(&default_mic_item)?;
+        let mut mic_items = HashMap::new();
+        for dev in devices {
+            let checked = current_mic.map(|m| m == dev.name).unwrap_or(false);
+            let item = CheckMenuItem::new(dev.name.clone(), true, checked, None);
+            menu.append(&item)?;
+            mic_items.insert(item.id().clone(), (dev.name.clone(), item.clone()));
         }
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_item)?;
@@ -74,6 +83,7 @@ impl TrayController {
             tray,
             status_item,
             start_stop_item,
+            default_mic_item,
             mic_items,
             quit_id,
             icons,
@@ -87,16 +97,27 @@ impl TrayController {
         if id == self.quit_id {
             return Some(TrayAction::Quit);
         }
+        if id == self.default_mic_item.id().clone() {
+            return Some(TrayAction::SelectMic(None));
+        }
         self.mic_items
             .get(&id)
-            .map(|(name, _)| name.clone())
-            .map(TrayAction::SelectMic)
+            .map(|(name, _)| TrayAction::SelectMic(Some(name.clone())))
     }
 
-    pub fn set_selected_mic(&self, name: &str) {
+    pub fn set_selected_mic(&self, name: Option<&str>) {
+        self.default_mic_item.set_checked(name.is_none());
         for (_id, (mic_name, item)) in &self.mic_items {
-            item.set_checked(mic_name == name);
+            item.set_checked(name == Some(mic_name.as_str()));
         }
+    }
+
+    pub fn set_default_mic_label(&self, name: Option<&str>) {
+        let label = match name {
+            Some(name) => format!("System Default ({name})"),
+            None => "System Default".to_string(),
+        };
+        self.default_mic_item.set_text(label);
     }
 
     pub fn set_state(&self, state: TrayState) -> Result<()> {
@@ -154,13 +175,13 @@ fn icon_idle_mic() -> Result<Icon> {
     let mut canvas = empty_canvas();
     let black = [0, 0, 0, 255];
     let cx = (ICON_SIZE / 2) as i32;
-    let top = 8;
-    draw_capsule(&mut canvas, cx, top, 16, 12, black);
-    draw_rect(&mut canvas, cx - 1, top + 14, 2, 10, black);
-    draw_rect(&mut canvas, cx - 8, top + 26, 16, 2, black);
-    draw_rect(&mut canvas, cx - 5, top + 4, 10, 1, [0, 0, 0, 180]);
-    draw_rect(&mut canvas, cx - 5, top + 7, 10, 1, [0, 0, 0, 180]);
-    draw_rect(&mut canvas, cx - 5, top + 10, 10, 1, [0, 0, 0, 180]);
+    let top = 2;
+    draw_capsule(&mut canvas, cx, top, 18, 26, black);
+    draw_rect(&mut canvas, cx - 1, top + 26, 2, 13, black);
+    draw_rect(&mut canvas, cx - 9, 41, 18, 2, black);
+    draw_rect(&mut canvas, cx - 6, top + 6, 12, 1, [0, 0, 0, 180]);
+    draw_rect(&mut canvas, cx - 6, top + 9, 12, 1, [0, 0, 0, 180]);
+    draw_rect(&mut canvas, cx - 6, top + 12, 12, 1, [0, 0, 0, 180]);
     Icon::from_rgba(canvas, ICON_SIZE as u32, ICON_SIZE as u32).context("build idle icon")
 }
 
@@ -168,7 +189,7 @@ fn icon_recording() -> Result<Icon> {
     let mut canvas = empty_canvas();
     let red = [220, 24, 32, 255];
     let cx = (ICON_SIZE / 2) as i32;
-    draw_circle(&mut canvas, cx, cx, 16, red);
+    draw_circle(&mut canvas, cx, cx, 21, red);
     Icon::from_rgba(canvas, ICON_SIZE as u32, ICON_SIZE as u32).context("build recording icon")
 }
 
@@ -177,10 +198,10 @@ fn icon_transcribing(progress: Option<u8>) -> Result<Icon> {
     let base = [240, 200, 40, 255];
     let fill = [0, 0, 0, 255];
     let cx = (ICON_SIZE / 2) as i32;
-    draw_circle(&mut canvas, cx, cx, 16, base);
+    draw_circle(&mut canvas, cx, cx, 21, base);
     if let Some(pct) = progress {
         let angle = (pct.min(100) as f32) / 100.0 * std::f32::consts::TAU;
-        draw_wedge(&mut canvas, cx, cx, 16, angle, fill);
+        draw_wedge(&mut canvas, cx, cx, 21, angle, fill);
     }
     Icon::from_rgba(canvas, ICON_SIZE as u32, ICON_SIZE as u32).context("build transcribing icon")
 }
@@ -189,7 +210,7 @@ fn icon_downloading() -> Result<Icon> {
     let mut canvas = empty_canvas();
     let gray = [120, 120, 120, 255];
     let cx = (ICON_SIZE / 2) as i32;
-    draw_ring(&mut canvas, cx, cx, 14, 10, gray);
+    draw_ring(&mut canvas, cx, cx, 21, 15, gray);
     Icon::from_rgba(canvas, ICON_SIZE as u32, ICON_SIZE as u32).context("build downloading icon")
 }
 

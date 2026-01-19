@@ -73,7 +73,12 @@ fn run_daemon(args: RunArgs) -> Result<()> {
 
     storage::ensure_dir(&config.recordings_dir)?;
     let devices = CpalRecorder::list_devices()?;
-    let tray = TrayController::new(&devices, config.selected_mic.as_deref())?;
+    let default_mic = CpalRecorder::default_device_name()?;
+    let tray = TrayController::new(
+        &devices,
+        config.selected_mic.as_deref(),
+        default_mic.as_deref(),
+    )?;
     tray.set_state(TrayState::Downloading { progress: None })?;
 
     let (worker_tx, worker_rx) = unbounded();
@@ -161,10 +166,21 @@ impl App {
                 std::process::exit(0);
             }
             TrayAction::SelectMic(name) => {
-                tracing::info!(mic = %name, "select microphone");
-                self.config.selected_mic = Some(name);
-                if let Some(selected) = self.config.selected_mic.as_deref() {
-                    self.tray.set_selected_mic(selected);
+                match name {
+                    Some(name) => {
+                        tracing::info!(mic = %name, "select microphone");
+                        self.config.selected_mic = Some(name);
+                    }
+                    None => {
+                        tracing::info!("select microphone: system default");
+                        self.config.selected_mic = None;
+                    }
+                }
+                self.tray
+                    .set_selected_mic(self.config.selected_mic.as_deref());
+                if self.config.selected_mic.is_none() {
+                    let current_default = CpalRecorder::default_device_name()?;
+                    self.tray.set_default_mic_label(current_default.as_deref());
                 }
                 self.store.save(&self.config)?;
             }
@@ -226,6 +242,10 @@ impl App {
     fn start_recording(&mut self) -> Result<()> {
         tracing::info!("start recording");
         beep::play().ok();
+        if self.config.selected_mic.is_none() {
+            let current_default = CpalRecorder::default_device_name()?;
+            self.tray.set_default_mic_label(current_default.as_deref());
+        }
         let handle = CpalRecorder::start_recording(self.config.selected_mic.as_deref())?;
         self.recording = Some(handle);
         self.state = AppState::Recording;
