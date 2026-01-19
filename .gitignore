@@ -1,0 +1,8 @@
+/target
+/.recordings
+.DS_Store
+**/*.rs.bk
+*.swp
+*.swo
+.idea/
+.vscode/
