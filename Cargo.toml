@@ -11,7 +11,6 @@ clap = { version = "4.5", features = ["derive"] }
 cpal = "0.15"
 crossbeam-channel = "0.5"
 directories = "5.0"
-hound = "3.5"
 indicatif = "0.17"
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
 rodio = "0.19"
@@ -27,5 +26,6 @@ whisper-rs = { version = "0.11", features = ["raw-api", "metal"] }
 global-hotkey = "0.4"
 
 [dev-dependencies]
+hound = "3.5"
 regex = "1.10"
 tempfile = "3.10"
