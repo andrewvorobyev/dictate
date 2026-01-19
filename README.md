@@ -28,6 +28,21 @@ just run
 cargo run -- run
 ```
 
+## Models
+The default model is `small`. Choose a different one with `--model`:
+```bash
+just run --model tiny
+# or
+cargo run -- run --model tiny
+```
+
+List all available models (with size, description, and language support):
+```bash
+just models
+# or
+cargo run -- models
+```
+
 ## Permissions (macOS)
 Because the app runs from your terminal, macOS will prompt for permissions tied to the
 terminal app you launch it from.
