@@ -4,3 +4,28 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0"
+arboard = "3.4"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+cpal = "0.15"
+crossbeam-channel = "0.5"
+directories = "5.0"
+hound = "3.5"
+indicatif = "0.17"
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
+rodio = "0.19"
+rubato = "0.15"
+serde = { version = "1.0", features = ["derive"] }
+symphonia = { version = "0.5", features = ["all"] }
+tao = "0.27"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "time"] }
+tray-icon = "0.14"
+whisper-rs = "0.11"
+global-hotkey = "0.4"
+
+[dev-dependencies]
+regex = "1.10"
+tempfile = "3.10"
