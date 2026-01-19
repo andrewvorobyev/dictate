@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Sample, SampleFormat};
+use cpal::{FromSample, Sample, SampleFormat};
 use crossbeam_channel::{bounded, Sender};
 use std::io::Write;
 use std::path::Path;
@@ -93,6 +93,11 @@ impl CpalRecorder {
                     err_fn,
                     None,
                 )?,
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "unsupported sample format: {sample_format:?}"
+                    ))
+                }
             };
 
             stream.play()?;
@@ -111,16 +116,19 @@ impl CpalRecorder {
     }
 }
 
-fn write_input_data<T: Sample>(input: &[T], samples: &Arc<Mutex<Vec<f32>>>) {
+fn write_input_data<T>(input: &[T], samples: &Arc<Mutex<Vec<f32>>>)
+where
+    T: Sample,
+    f32: FromSample<T>,
+{
     if let Ok(mut buffer) = samples.lock() {
         for &sample in input {
-            buffer.push(sample.to_f32());
+            buffer.push(sample.to_sample::<f32>());
         }
     }
 }
 
-// Uses external ffmpeg for now; swap to a native/ffmpeg crate encoder if preferred.
-pub fn encode_m4a_ffmpeg(recorded: &RecordedAudio, output: &Path) -> Result<()> {
+pub fn encode_m4a(recorded: &RecordedAudio, output: &Path) -> Result<()> {
     let mut child = Command::new("ffmpeg")
         .args([
             "-y",

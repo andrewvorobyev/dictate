@@ -1,7 +1,7 @@
 use crate::audio::AudioDevice;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use tray_icon::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 #[derive(Debug, Clone)]
@@ -21,7 +21,7 @@ pub enum TrayAction {
 pub struct TrayController {
     tray: TrayIcon,
     status_item: MenuItem,
-    mic_items: HashMap<MenuId, (String, MenuItem)>,
+    mic_items: HashMap<MenuId, (String, CheckMenuItem)>,
     quit_id: MenuId,
     icons: TrayIcons,
 }
@@ -37,18 +37,16 @@ impl TrayController {
     pub fn new(devices: &[AudioDevice], current_mic: Option<&str>) -> Result<Self> {
         let status_item = MenuItem::new("Status: Idle", false, None);
         let quit_item = PredefinedMenuItem::quit(None);
-        let quit_id = quit_item.id();
+        let quit_id = quit_item.id().clone();
 
-        let mic_menu = Menu::new();
+        let mic_submenu = Submenu::new("Microphone", true);
         let mut mic_items = HashMap::new();
         for dev in devices {
             let checked = current_mic.map(|m| m == dev.name).unwrap_or(false);
-            let item = MenuItem::new(dev.name.clone(), true, None);
-            item.set_checked(checked);
-            mic_items.insert(item.id(), (dev.name.clone(), item.clone()));
-            mic_menu.append(&item)?;
+            let item = CheckMenuItem::new(dev.name.clone(), true, checked, None);
+            mic_items.insert(item.id().clone(), (dev.name.clone(), item.clone()));
+            mic_submenu.append(&item)?;
         }
-        let mic_submenu = Submenu::new("Microphone", true, mic_menu);
 
         let menu = Menu::new();
         menu.append(&status_item)?;
@@ -92,28 +90,30 @@ impl TrayController {
     pub fn set_state(&self, state: TrayState) -> Result<()> {
         match state {
             TrayState::Idle => {
-                self.tray.set_icon(self.icons.idle.clone())?;
-                self.status_item.set_title("Status: Idle");
+                self.tray.set_icon(Some(self.icons.idle.clone()))?;
+                self.status_item.set_text("Status: Idle");
             }
             TrayState::Recording => {
-                self.tray.set_icon(self.icons.recording.clone())?;
-                self.status_item.set_title("Status: Recording");
+                self.tray.set_icon(Some(self.icons.recording.clone()))?;
+                self.status_item.set_text("Status: Recording");
             }
             TrayState::Transcribing { progress } => {
-                self.tray.set_icon(self.icons.transcribing.clone())?;
+                self.tray
+                    .set_icon(Some(self.icons.transcribing.clone()))?;
                 let label = match progress {
                     Some(p) => format!("Status: Transcribing {p}%"),
                     None => "Status: Transcribing".to_string(),
                 };
-                self.status_item.set_title(&label);
+                self.status_item.set_text(&label);
             }
             TrayState::Downloading { progress } => {
-                self.tray.set_icon(self.icons.downloading.clone())?;
+                self.tray
+                    .set_icon(Some(self.icons.downloading.clone()))?;
                 let label = match progress {
                     Some(p) => format!("Status: Loading model {p}%"),
                     None => "Status: Loading model".to_string(),
                 };
-                self.status_item.set_title(&label);
+                self.status_item.set_text(&label);
             }
         }
         Ok(())

@@ -41,7 +41,7 @@ mod tests {
     #[test]
     fn iso_timestamp_has_timezone_and_ms() {
         let stamp = iso_timestamp();
-        let re = Regex::new(r"^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}\\.\\d{3}[+-]\\d{4}$")
+        let re = Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}[+-]\d{4}$")
             .expect("regex");
         assert!(re.is_match(&stamp), "stamp format unexpected: {stamp}");
     }

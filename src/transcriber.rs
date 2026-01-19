@@ -30,8 +30,11 @@ impl WhisperTranscriber {
             .model_path
             .to_str()
             .context("model path not valid utf-8")?;
-        let ctx = whisper_rs::WhisperContext::new(model_path)
-            .with_context(|| format!("load whisper model {model_path}"))?;
+        let ctx = whisper_rs::WhisperContext::new_with_params(
+            model_path,
+            whisper_rs::WhisperContextParameters::default(),
+        )
+        .with_context(|| format!("load whisper model {model_path}"))?;
         let mut state = ctx
             .create_state()
             .context("create whisper state")?;
@@ -48,7 +51,7 @@ impl WhisperTranscriber {
             let segment = state
                 .full_get_segment_text(i)
                 .context("segment text")?;
-            out.push_str(segment);
+            out.push_str(&segment);
         }
         Ok(out.trim().to_string())
     }
@@ -92,13 +95,15 @@ fn decode_to_mono_f32(path: &Path) -> Result<(Vec<f32>, u32)> {
         let decoded = decoder.decode(&packet)?;
         let spec = *decoded.spec();
         let channels = spec.channels.count();
-        let mut sample_buf = SampleBuffer::<f32>::new(decoded.frames(), spec);
+        let duration = decoded.frames() as u64;
+        let mut sample_buf = SampleBuffer::<f32>::new(duration, spec);
         sample_buf.copy_interleaved_ref(decoded);
         let samples = sample_buf.samples();
         if channels == 1 {
             mono.extend_from_slice(samples);
         } else {
-            for frame in 0..sample_buf.frames() {
+            let frames = samples.len() / channels;
+            for frame in 0..frames {
                 let mut sum = 0.0;
                 for ch in 0..channels {
                     sum += samples[frame * channels + ch];

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use dictate_2::audio::{encode_m4a_ffmpeg, CpalRecorder};
+use dictate_2::audio::{encode_m4a, CpalRecorder};
 use dictate_2::model;
 use dictate_2::transcriber::WhisperTranscriber;
 use std::fs;
@@ -16,7 +16,7 @@ fn e2e_record_and_transcribe() -> Result<()> {
     let recorded = handle.stop()?;
 
     let audio = dir.path().join("recording.m4a");
-    encode_m4a_ffmpeg(&recorded, &audio)?;
+    encode_m4a(&recorded, &audio)?;
 
     let model_dir = dir.path().join("models");
     let model_path = model::ensure_model(&model_dir, "tiny")?;

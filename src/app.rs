@@ -1,4 +1,4 @@
-use crate::audio::{encode_m4a_ffmpeg, CpalRecorder, RecordingHandle};
+use crate::audio::{encode_m4a, CpalRecorder, RecordingHandle};
 use crate::beep;
 use crate::cli::{Cli, Commands, RunArgs, TranscribeArgs};
 use crate::clipboard::Clipboard;
@@ -76,7 +76,7 @@ fn run_daemon(args: RunArgs) -> Result<()> {
     let models_dir = default_models_dir()?;
     spawn_model_download(models_dir.clone(), config.model.clone(), worker_tx.clone());
 
-    let mut app = App {
+    let app = App {
         config,
         store,
         tray,
@@ -231,7 +231,7 @@ impl App {
             let result: Result<()> = (|| {
                 let recorded = handle.stop()?;
                 let (audio_path, text_path) = storage::next_recording_paths(&recordings_dir)?;
-                encode_m4a_ffmpeg(&recorded, &audio_path)?;
+                encode_m4a(&recorded, &audio_path)?;
                 let transcriber = WhisperTranscriber::new(model_path)?;
                 let text = transcriber.transcribe_file(&audio_path)?;
                 fs::write(&text_path, &text).with_context(|| {
