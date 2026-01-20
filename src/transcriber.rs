@@ -57,8 +57,26 @@ impl WhisperTranscriber {
     where
         F: FnMut(i32) + 'static,
     {
+        tracing::info!(path = %path.display(), "decoding audio");
         let (samples, sample_rate) = decode_to_mono_f32(path)?;
+        let raw_duration = if sample_rate == 0 {
+            0.0
+        } else {
+            samples.len() as f32 / sample_rate as f32
+        };
+        tracing::info!(
+            sample_rate,
+            samples = samples.len(),
+            duration_sec = raw_duration,
+            "decoded audio"
+        );
         let samples_16k = resample_to_16k(samples, sample_rate)?;
+        let duration_16k = samples_16k.len() as f32 / 16_000.0;
+        tracing::info!(
+            samples = samples_16k.len(),
+            duration_sec = duration_16k,
+            "resampled audio"
+        );
         self.transcribe_samples_with_progress(&samples_16k, progress, prompt, language)
     }
 
@@ -105,6 +123,20 @@ impl WhisperTranscriber {
                 params.set_initial_prompt(prompt);
             }
         }
+        let mut max_abs = 0.0f32;
+        let mut sum_abs = 0.0f32;
+        for &sample in samples {
+            let abs = sample.abs();
+            if abs > max_abs {
+                max_abs = abs;
+            }
+            sum_abs += abs;
+        }
+        let avg_abs = if samples.is_empty() {
+            0.0
+        } else {
+            sum_abs / samples.len() as f32
+        };
         let language = language.and_then(|lang| {
             let lang = lang.trim();
             if lang.is_empty() || lang.eq_ignore_ascii_case("auto") {
@@ -120,12 +152,33 @@ impl WhisperTranscriber {
             params.set_language(None);
             params.set_detect_language(true);
         }
+        tracing::info!(
+            model = %model_path,
+            threads,
+            prompt_len = prompt.map(|p| p.trim().len()).unwrap_or(0),
+            language = language.unwrap_or("auto"),
+            detect_language = language.is_none(),
+            duration_sec = (samples.len() as f32 / 16_000.0),
+            max_abs,
+            avg_abs,
+            "starting whisper inference"
+        );
         params.set_progress_callback_safe::<Option<F>, F>(progress);
         state
             .full(params, samples)
             .context("whisper inference")?;
 
         let num_segments = state.full_n_segments().context("segment count")?;
+        if num_segments == 0 {
+            tracing::warn!(
+                duration_sec = (samples.len() as f32 / 16_000.0),
+                max_abs,
+                avg_abs,
+                "whisper returned no segments"
+            );
+        } else {
+            tracing::info!(num_segments, "whisper returned segments");
+        }
         let mut out = String::new();
         for i in 0..num_segments {
             let segment = state
@@ -303,7 +356,7 @@ fn ensure_metal_resources() {
         }
     }
 
-    tracing::warn!("metal resources not found; set GGML_METAL_PATH_RESOURCES");
+    tracing::error!("metal resources not found; set GGML_METAL_PATH_RESOURCES");
 }
 
 fn decode_to_mono_f32(path: &Path) -> Result<(Vec<f32>, u32)> {
