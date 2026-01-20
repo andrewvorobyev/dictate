@@ -18,8 +18,8 @@ pub enum Commands {
 
 #[derive(Parser, Debug, Clone)]
 pub struct RunArgs {
-    #[arg(long, default_value = "small")]
-    pub model: String,
+    #[arg(long)]
+    pub model: Option<String>,
     #[arg(long, default_value = ".recordings")]
     pub recordings_dir: PathBuf,
 }
@@ -27,7 +27,7 @@ pub struct RunArgs {
 impl Default for RunArgs {
     fn default() -> Self {
         Self {
-            model: "small".to_string(),
+            model: None,
             recordings_dir: PathBuf::from(".recordings"),
         }
     }
@@ -37,6 +37,6 @@ impl Default for RunArgs {
 pub struct TranscribeArgs {
     #[arg(long)]
     pub input: PathBuf,
-    #[arg(long, default_value = "small")]
-    pub model: String,
+    #[arg(long)]
+    pub model: Option<String>,
 }

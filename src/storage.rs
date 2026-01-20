@@ -32,6 +32,21 @@ pub fn transcript_path_for_input(input: &Path) -> Result<PathBuf> {
     Ok(parent.join(format!("{stem}.md")))
 }
 
+pub fn transcript_path_for_output_dir(input: &Path, output_dir: &Path) -> Result<PathBuf> {
+    let stem = input
+        .file_stem()
+        .context("input file has no filename")?
+        .to_string_lossy();
+    Ok(output_dir.join(format!("{stem}.md")))
+}
+
+pub fn processed_path_for_input(input: &Path, processed_dir: &Path) -> Result<PathBuf> {
+    let name = input
+        .file_name()
+        .context("input file has no filename")?;
+    Ok(processed_dir.join(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,6 +69,26 @@ mod tests {
         assert!(text.starts_with(dir.path()));
         assert!(audio.extension().unwrap_or_default() == "m4a");
         assert!(text.extension().unwrap_or_default() == "md");
+        Ok(())
+    }
+
+    #[test]
+    fn transcript_path_for_output_dir_uses_stem() -> Result<()> {
+        let dir = tempdir()?;
+        let input = dir.path().join("2024-06-01T12-00-00.m4a");
+        let output_dir = dir.path().join("out");
+        let out = transcript_path_for_output_dir(&input, &output_dir)?;
+        assert_eq!(out, output_dir.join("2024-06-01T12-00-00.md"));
+        Ok(())
+    }
+
+    #[test]
+    fn processed_path_for_input_preserves_filename() -> Result<()> {
+        let dir = tempdir()?;
+        let input = dir.path().join("sample.m4a");
+        let processed_dir = dir.path().join("processed");
+        let out = processed_path_for_input(&input, &processed_dir)?;
+        assert_eq!(out, processed_dir.join("sample.m4a"));
         Ok(())
     }
 }

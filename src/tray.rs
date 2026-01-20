@@ -6,6 +6,12 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 const ICON_SIZE: usize = 44;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Theme {
+    Light,
+    Dark,
+}
+
 #[derive(Debug, Clone)]
 pub enum TrayState {
     Idle,
@@ -29,10 +35,12 @@ pub struct TrayController {
     mic_items: HashMap<MenuId, (String, CheckMenuItem)>,
     quit_id: MenuId,
     icons: TrayIcons,
+    idle_theme: Theme,
 }
 
 struct TrayIcons {
-    idle: Icon,
+    idle_light: Icon,
+    idle_dark: Icon,
     recording: Icon,
     downloading: Icon,
 }
@@ -72,10 +80,11 @@ impl TrayController {
         menu.append(&quit_item)?;
 
         let icons = TrayIcons::new()?;
+        let idle_theme = current_theme();
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("Dictate")
-            .with_icon(icons.idle.clone())
+            .with_icon(icons.idle_for_theme(idle_theme))
             .build()
             .context("create tray icon")?;
 
@@ -87,6 +96,7 @@ impl TrayController {
             mic_items,
             quit_id,
             icons,
+            idle_theme,
         })
     }
 
@@ -123,7 +133,8 @@ impl TrayController {
     pub fn set_state(&self, state: TrayState) -> Result<()> {
         match state {
             TrayState::Idle => {
-                self.tray.set_icon(Some(self.icons.idle.clone()))?;
+                self.tray
+                    .set_icon(Some(self.icons.idle_for_theme(self.idle_theme)))?;
                 self.status_item.set_text("Status: Idle");
                 self.start_stop_item
                     .set_text("Start Recording (Option+Space)");
@@ -159,44 +170,103 @@ impl TrayController {
         }
         Ok(())
     }
+
+    pub fn sync_idle_theme(&mut self) -> Result<()> {
+        let theme = current_theme();
+        if theme != self.idle_theme {
+            self.idle_theme = theme;
+            self.tray
+                .set_icon(Some(self.icons.idle_for_theme(self.idle_theme)))?;
+        }
+        Ok(())
+    }
 }
 
 impl TrayIcons {
     fn new() -> Result<Self> {
         Ok(Self {
-            idle: icon_idle_mic()?,
+            idle_light: icon_idle_mic(IdlePalette::light())?,
+            idle_dark: icon_idle_mic(IdlePalette::dark())?,
             recording: icon_recording()?,
             downloading: icon_downloading()?,
         })
     }
+
+    fn idle_for_theme(&self, theme: Theme) -> Icon {
+        match theme {
+            Theme::Light => self.idle_light.clone(),
+            Theme::Dark => self.idle_dark.clone(),
+        }
+    }
 }
 
-fn icon_idle_mic() -> Result<Icon> {
+struct IdlePalette {
+    body: [u8; 4],
+    arm: [u8; 4],
+    highlight: [u8; 4],
+    grille: [u8; 4],
+}
+
+impl IdlePalette {
+    fn light() -> Self {
+        Self {
+            body: [255, 255, 255, 255],
+            arm: [220, 220, 220, 255],
+            highlight: [0, 0, 0, 25],
+            grille: [0, 0, 0, 80],
+        }
+    }
+
+    fn dark() -> Self {
+        Self {
+            body: [0, 0, 0, 255],
+            arm: [40, 40, 40, 255],
+            highlight: [255, 255, 255, 35],
+            grille: [255, 255, 255, 90],
+        }
+    }
+}
+
+fn icon_idle_mic(palette: IdlePalette) -> Result<Icon> {
     let mut canvas = empty_canvas();
-    let black = [0, 0, 0, 255];
-    let dark_gray = [40, 40, 40, 255];
     let cx = ICON_SIZE as f32 / 2.0;
 
     // Microphone body - elegant capsule shape
-    draw_capsule_aa(&mut canvas, cx, 4.0, 16.0, 24.0, black);
+    draw_capsule_aa(&mut canvas, cx, 4.0, 16.0, 24.0, palette.body);
 
     // Subtle highlight on left side of mic body for depth
-    draw_capsule_aa(&mut canvas, cx - 3.0, 6.0, 3.0, 18.0, [255, 255, 255, 35]);
+    draw_capsule_aa(
+        &mut canvas,
+        cx - 3.0,
+        6.0,
+        3.0,
+        18.0,
+        palette.highlight,
+    );
 
     // Microphone grille lines - delicate horizontal lines
     for i in 0..4 {
         let y = 10.0 + i as f32 * 4.0;
-        draw_line_h_aa(&mut canvas, cx - 5.0, y, 10.0, [255, 255, 255, 90]);
+        draw_line_h_aa(&mut canvas, cx - 5.0, y, 10.0, palette.grille);
     }
 
     // Stand/stem - tapered elegant stem
-    draw_rect_aa(&mut canvas, cx - 1.5, 28.0, 3.0, 8.0, black);
+    draw_rect_aa(&mut canvas, cx - 1.5, 28.0, 3.0, 8.0, palette.body);
 
     // Curved arm holding the mic
-    draw_arc_aa(&mut canvas, cx, 28.0, 10.0, 0.0, std::f32::consts::PI, 2.5, dark_gray);
+    draw_arc_aa(
+        &mut canvas,
+        cx,
+        28.0,
+        10.0,
+        0.0,
+        std::f32::consts::PI,
+        2.5,
+        palette.arm,
+    );
 
     // Base - solid horizontal bar
-    draw_rect_aa(&mut canvas, cx - 10.0, 40.0, 20.0, 2.5, black);
+    draw_rect_aa(&mut canvas, cx - 10.0, 40.0, 20.0, 2.5, palette.body);
 
     Icon::from_rgba(canvas, ICON_SIZE as u32, ICON_SIZE as u32).context("build idle icon")
 }
@@ -240,6 +310,39 @@ fn set_pixel(canvas: &mut [u8], x: i32, y: i32, color: [u8; 4]) {
     }
     let idx = ((y as usize) * ICON_SIZE + (x as usize)) * 4;
     canvas[idx..idx + 4].copy_from_slice(&color);
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+fn current_theme() -> Theme {
+    use objc::{class, msg_send, sel, sel_impl};
+    use objc::runtime::{Object, BOOL};
+    use std::ffi::CString;
+
+    unsafe {
+        let defaults: *mut Object = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        let key = CString::new("AppleInterfaceStyle").expect("cstring");
+        let key_ns: *mut Object =
+            msg_send![class!(NSString), stringWithUTF8String: key.as_ptr()];
+        let style: *mut Object = msg_send![defaults, stringForKey: key_ns];
+        if style.is_null() {
+            return Theme::Light;
+        }
+        let dark = CString::new("Dark").expect("cstring");
+        let dark_ns: *mut Object =
+            msg_send![class!(NSString), stringWithUTF8String: dark.as_ptr()];
+        let is_dark: BOOL = msg_send![style, isEqualToString: dark_ns];
+        if is_dark != 0 {
+            Theme::Dark
+        } else {
+            Theme::Light
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn current_theme() -> Theme {
+    Theme::Light
 }
 
 fn draw_circle(canvas: &mut [u8], cx: i32, cy: i32, r: i32, color: [u8; 4]) {
@@ -429,4 +532,3 @@ fn draw_arc_aa(
         }
     }
 }
-

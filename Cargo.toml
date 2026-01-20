@@ -12,18 +12,22 @@ cpal = "0.15"
 crossbeam-channel = "0.5"
 directories = "5.0"
 indicatif = "0.17"
+notify = "6.1"
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
 rodio = "0.19"
 rubato = "0.15"
 serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
 symphonia = { version = "0.5", features = ["all"] }
 tao = "0.27"
-toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time"] }
 tray-icon = "0.14"
 whisper-rs = { version = "0.11", features = ["raw-api", "metal"] }
 global-hotkey = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
 
 [dev-dependencies]
 hound = "3.5"

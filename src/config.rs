@@ -1,14 +1,29 @@
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
+use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct Config {
     pub selected_mic: Option<String>,
     pub model: String,
     pub recordings_dir: PathBuf,
+    pub vocabulary: Vec<String>,
+    pub auto_transcribe: Option<AutoTranscribeConfig>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AutoTranscribeConfig {
+    pub processed_dir: PathBuf,
+    pub watches: Vec<WatchPair>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WatchPair {
+    pub input_dir: PathBuf,
+    pub output_dir: PathBuf,
 }
 
 impl Default for Config {
@@ -17,6 +32,8 @@ impl Default for Config {
             selected_mic: None,
             model: "small".to_string(),
             recordings_dir: PathBuf::from(".recordings"),
+            vocabulary: Vec::new(),
+            auto_transcribe: None,
         }
     }
 }
@@ -28,9 +45,8 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     pub fn new() -> Result<Self> {
-        let proj = ProjectDirs::from("com", "dictate", "dictate")
-            .context("unable to resolve config directory")?;
-        let path = proj.config_dir().join("config.toml");
+        let base = BaseDirs::new().context("unable to resolve home directory")?;
+        let path = base.home_dir().join(".config").join("dictate.yaml");
         Ok(Self { path })
     }
 
@@ -44,7 +60,7 @@ impl ConfigStore {
         }
         let contents = fs::read_to_string(&self.path)
             .with_context(|| format!("read config {}", self.path.display()))?;
-        let config: Config = toml::from_str(&contents)?;
+        let config: Config = serde_yaml::from_str(&contents)?;
         Ok(config)
     }
 
@@ -53,7 +69,7 @@ impl ConfigStore {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create config dir {}", parent.display()))?;
         }
-        let contents = toml::to_string_pretty(config)?;
+        let contents = serde_yaml::to_string(config)?;
         fs::write(&self.path, contents)
             .with_context(|| format!("write config {}", self.path.display()))?;
         Ok(())
@@ -68,17 +84,40 @@ mod tests {
     #[test]
     fn config_roundtrip() -> Result<()> {
         let dir = tempdir()?;
-        let path = dir.path().join("config.toml");
+        let path = dir.path().join("dictate.yaml");
         let store = ConfigStore { path };
         let mut cfg = Config::default();
         cfg.selected_mic = Some("Test Mic".to_string());
         cfg.model = "tiny".to_string();
         cfg.recordings_dir = PathBuf::from("custom");
+        cfg.vocabulary = vec!["Dictate".to_string(), "Whisper".to_string()];
+        cfg.auto_transcribe = Some(AutoTranscribeConfig {
+            processed_dir: PathBuf::from("processed"),
+            watches: vec![WatchPair {
+                input_dir: PathBuf::from("input"),
+                output_dir: PathBuf::from("output"),
+            }],
+        });
         store.save(&cfg)?;
         let loaded = store.load()?;
         assert_eq!(loaded.selected_mic, cfg.selected_mic);
         assert_eq!(loaded.model, cfg.model);
         assert_eq!(loaded.recordings_dir, cfg.recordings_dir);
+        assert_eq!(loaded.vocabulary, cfg.vocabulary);
+        assert_eq!(
+            loaded
+                .auto_transcribe
+                .as_ref()
+                .map(|c| &c.processed_dir),
+            cfg.auto_transcribe.as_ref().map(|c| &c.processed_dir)
+        );
+        assert_eq!(
+            loaded
+                .auto_transcribe
+                .as_ref()
+                .map(|c| c.watches.len()),
+            cfg.auto_transcribe.as_ref().map(|c| c.watches.len())
+        );
         Ok(())
     }
 }

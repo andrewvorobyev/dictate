@@ -26,7 +26,15 @@ impl WhisperTranscriber {
     }
 
     pub fn transcribe_file(&self, path: &Path) -> Result<String> {
-        self.transcribe_file_with_progress(path, None::<fn(i32)>)
+        self.transcribe_file_with_progress_and_prompt(path, None::<fn(i32)>, None)
+    }
+
+    pub fn transcribe_file_with_prompt(
+        &self,
+        path: &Path,
+        prompt: Option<&str>,
+    ) -> Result<String> {
+        self.transcribe_file_with_progress_and_prompt(path, None::<fn(i32)>, prompt)
     }
 
     pub fn transcribe_file_with_progress<F>(
@@ -37,15 +45,28 @@ impl WhisperTranscriber {
     where
         F: FnMut(i32) + 'static,
     {
+        self.transcribe_file_with_progress_and_prompt(path, progress, None)
+    }
+
+    pub fn transcribe_file_with_progress_and_prompt<F>(
+        &self,
+        path: &Path,
+        progress: Option<F>,
+        prompt: Option<&str>,
+    ) -> Result<String>
+    where
+        F: FnMut(i32) + 'static,
+    {
         let (samples, sample_rate) = decode_to_mono_f32(path)?;
         let samples_16k = resample_to_16k(samples, sample_rate)?;
-        self.transcribe_samples_with_progress(&samples_16k, progress)
+        self.transcribe_samples_with_progress(&samples_16k, progress, prompt)
     }
 
     fn transcribe_samples_with_progress<F>(
         &self,
         samples: &[f32],
         progress: Option<F>,
+        prompt: Option<&str>,
     ) -> Result<String>
     where
         F: FnMut(i32) + 'static,
@@ -67,6 +88,12 @@ impl WhisperTranscriber {
             .map(|n| n.get() as i32)
             .unwrap_or(4);
         params.set_n_threads(threads);
+        if let Some(prompt) = prompt {
+            let prompt = prompt.trim();
+            if !prompt.is_empty() {
+                params.set_initial_prompt(prompt);
+            }
+        }
         params.set_progress_callback_safe::<Option<F>, F>(progress);
         state
             .full(params, samples)
