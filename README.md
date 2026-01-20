@@ -69,7 +69,7 @@ terminal app you launch it from.
 ```bash
 just transcribe /path/to/audio.m4a
 ```
-Force a specific language (omit for auto-detect):
+Force a specific language (default is English; use `auto` to detect):
 ```bash
 just transcribe /path/to/audio.m4a --language ru
 ```

@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+use std::cell::RefCell;
 use std::ffi::CStr;
 use std::fs::File;
 use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Once;
 use std::{env, fs};
 use symphonia::core::audio::SampleBuffer;
@@ -57,26 +59,8 @@ impl WhisperTranscriber {
     where
         F: FnMut(i32) + 'static,
     {
-        tracing::info!(path = %path.display(), "decoding audio");
         let (samples, sample_rate) = decode_to_mono_f32(path)?;
-        let raw_duration = if sample_rate == 0 {
-            0.0
-        } else {
-            samples.len() as f32 / sample_rate as f32
-        };
-        tracing::info!(
-            sample_rate,
-            samples = samples.len(),
-            duration_sec = raw_duration,
-            "decoded audio"
-        );
         let samples_16k = resample_to_16k(samples, sample_rate)?;
-        let duration_16k = samples_16k.len() as f32 / 16_000.0;
-        tracing::info!(
-            samples = samples_16k.len(),
-            duration_sec = duration_16k,
-            "resampled audio"
-        );
         self.transcribe_samples_with_progress(&samples_16k, progress, prompt, language)
     }
 
@@ -95,34 +79,17 @@ impl WhisperTranscriber {
             .model_path
             .to_str()
             .context("model path not valid utf-8")?;
-        let mut ctx_params = whisper_rs::WhisperContextParameters::default();
-        ctx_params.use_gpu(true);
-        let ctx = whisper_rs::WhisperContext::new_with_params(model_path, ctx_params)
-            .with_context(|| format!("load whisper model {model_path}"))?;
-        unsafe {
-            set_metal_log_callback();
-        }
-        let mut state = ctx
-            .create_state()
-            .context("create whisper state")?;
-        let mut params =
-            whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
         let threads = std::thread::available_parallelism()
             .map(|n| n.get() as i32)
             .unwrap_or(4);
-        params.set_n_threads(threads);
-        params.set_suppress_blank(true);
-        params.set_suppress_non_speech_tokens(true);
-        params.set_temperature(0.0);
-        params.set_temperature_inc(0.0);
-        params.set_logprob_thold(-0.8);
-        params.set_entropy_thold(2.0);
-        if let Some(prompt) = prompt {
+        let prompt = prompt.and_then(|prompt| {
             let prompt = prompt.trim();
-            if !prompt.is_empty() {
-                params.set_initial_prompt(prompt);
+            if prompt.is_empty() {
+                None
+            } else {
+                Some(prompt)
             }
-        }
+        });
         let mut max_abs = 0.0f32;
         let mut sum_abs = 0.0f32;
         for &sample in samples {
@@ -139,54 +106,103 @@ impl WhisperTranscriber {
         };
         let language = language.and_then(|lang| {
             let lang = lang.trim();
-            if lang.is_empty() || lang.eq_ignore_ascii_case("auto") {
+            if lang.is_empty() {
                 None
             } else {
                 Some(lang)
             }
         });
+        let mut detect_language = false;
+        let mut language_for_params = None;
+        let mut language_label = "default-en";
         if let Some(language) = language {
-            params.set_language(Some(language));
-            params.set_detect_language(false);
-        } else {
-            params.set_language(None);
-            params.set_detect_language(true);
+            if language.eq_ignore_ascii_case("auto") {
+                detect_language = true;
+                language_label = "auto";
+            } else {
+                language_for_params = Some(language);
+                language_label = language;
+            }
         }
-        tracing::info!(
-            model = %model_path,
-            threads,
-            prompt_len = prompt.map(|p| p.trim().len()).unwrap_or(0),
-            language = language.unwrap_or("auto"),
-            detect_language = language.is_none(),
-            duration_sec = (samples.len() as f32 / 16_000.0),
-            max_abs,
-            avg_abs,
-            "starting whisper inference"
-        );
-        params.set_progress_callback_safe::<Option<F>, F>(progress);
-        state
-            .full(params, samples)
-            .context("whisper inference")?;
+        let prompt_len = prompt.map(|p| p.len()).unwrap_or(0);
+        let duration_sec = samples.len() as f32 / 16_000.0;
+        type ProgressFn = Box<dyn FnMut(i32) + 'static>;
+        let progress = progress.map(|cb| Rc::new(RefCell::new(cb)));
+        let make_progress_cb = |progress: &Option<Rc<RefCell<F>>>| -> Option<ProgressFn> {
+            progress.as_ref().map(|cb| {
+                let cb = Rc::clone(cb);
+                Box::new(move |pct| {
+                    if let Ok(mut cb) = cb.try_borrow_mut() {
+                        (cb)(pct);
+                    }
+                }) as ProgressFn
+            })
+        };
 
-        let num_segments = state.full_n_segments().context("segment count")?;
-        if num_segments == 0 {
-            tracing::warn!(
-                duration_sec = (samples.len() as f32 / 16_000.0),
-                max_abs,
-                avg_abs,
-                "whisper returned no segments"
-            );
-        } else {
-            tracing::info!(num_segments, "whisper returned segments");
+        let run_inference = |use_gpu: bool| -> Result<(String, i32)> {
+            let mut ctx_params = whisper_rs::WhisperContextParameters::default();
+            ctx_params.use_gpu(use_gpu);
+            let ctx = whisper_rs::WhisperContext::new_with_params(model_path, ctx_params)
+                .with_context(|| format!("load whisper model {model_path}"))?;
+            unsafe {
+                set_metal_log_callback();
+            }
+            let mut state = ctx
+                .create_state()
+                .context("create whisper state")?;
+            let mut params =
+                whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
+            params.set_n_threads(threads);
+            params.set_suppress_blank(true);
+            params.set_suppress_non_speech_tokens(true);
+            params.set_temperature(0.0);
+            params.set_temperature_inc(0.0);
+            params.set_logprob_thold(-0.8);
+            params.set_entropy_thold(2.0);
+            if let Some(prompt) = prompt {
+                params.set_initial_prompt(prompt);
+            }
+            let progress_cb = make_progress_cb(&progress);
+            params.set_progress_callback_safe::<Option<ProgressFn>, ProgressFn>(progress_cb);
+            if detect_language {
+                params.set_language(None);
+                params.set_detect_language(true);
+            } else if let Some(language) = language_for_params {
+                params.set_language(Some(language));
+                params.set_detect_language(false);
+            }
+            state
+                .full(params, samples)
+                .context("whisper inference")?;
+
+            let num_segments = state.full_n_segments().context("segment count")?;
+            let mut out = String::new();
+            for i in 0..num_segments {
+                let segment = state
+                    .full_get_segment_text(i)
+                    .context("segment text")?;
+                out.push_str(&segment);
+            }
+            Ok((out.trim().to_string(), num_segments))
+        };
+
+        let mut used_gpu = true;
+        let (mut text, mut num_segments) = match run_inference(true) {
+            Ok(result) => result,
+            Err(err) => {
+                used_gpu = false;
+                run_inference(false)?
+            }
+        };
+
+        if num_segments == 0 && used_gpu {
+            let (cpu_text, cpu_segments) = run_inference(false)?;
+            text = cpu_text;
+            num_segments = cpu_segments;
+            used_gpu = false;
         }
-        let mut out = String::new();
-        for i in 0..num_segments {
-            let segment = state
-                .full_get_segment_text(i)
-                .context("segment text")?;
-            out.push_str(&segment);
-        }
-        Ok(out.trim().to_string())
+
+        Ok(text)
     }
 }
 

@@ -39,7 +39,7 @@ pub struct TranscribeArgs {
     pub input: PathBuf,
     #[arg(long)]
     pub model: Option<String>,
-    /// Force a language (e.g. "en", "ru"); omit for auto-detect.
+    /// Force a language (e.g. "en", "ru"); default is English, use "auto" for detect.
     #[arg(long)]
     pub language: Option<String>,
 }
