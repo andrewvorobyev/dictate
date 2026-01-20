@@ -42,7 +42,8 @@ impl WhisperTranscriber {
         progress: Option<F>,
     ) -> Result<String>
     where
-        F: FnMut(i32) + 'static,
+        // Progress callbacks can be invoked from non-main threads; keep them Send to avoid UB.
+        F: FnMut(i32) + Send + 'static,
     {
         self.transcribe_file_with_progress_and_prompt(path, progress, None, None)
     }
@@ -55,7 +56,8 @@ impl WhisperTranscriber {
         language: Option<&str>,
     ) -> Result<String>
     where
-        F: FnMut(i32) + 'static,
+        // Progress callbacks can be invoked from non-main threads; keep them Send to avoid UB.
+        F: FnMut(i32) + Send + 'static,
     {
         tracing::debug!(path = %path.display(), "decoding audio");
         let (samples, sample_rate) = decode_to_mono_f32(path)?;
@@ -88,7 +90,8 @@ impl WhisperTranscriber {
         language: Option<&str>,
     ) -> Result<String>
     where
-        F: FnMut(i32) + 'static,
+        // Progress callbacks can be invoked from non-main threads; keep them Send to avoid UB.
+        F: FnMut(i32) + Send + 'static,
     {
         let _silence = StderrSilencer::new();
         let model_path = self
