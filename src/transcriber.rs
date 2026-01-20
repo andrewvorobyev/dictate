@@ -1,11 +1,9 @@
 use anyhow::{Context, Result};
 use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
-use std::cell::RefCell;
 use std::ffi::CStr;
 use std::fs::File;
 use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Once;
 use std::{env, fs};
 use symphonia::core::audio::SampleBuffer;
@@ -144,20 +142,7 @@ impl WhisperTranscriber {
         }
         let prompt_len = prompt.map(|p| p.len()).unwrap_or(0);
         let duration_sec = samples.len() as f32 / 16_000.0;
-        type ProgressFn = Box<dyn FnMut(i32) + 'static>;
-        let progress = progress.map(|cb| Rc::new(RefCell::new(cb)));
-        let make_progress_cb = |progress: &Option<Rc<RefCell<F>>>| -> Option<ProgressFn> {
-            progress.as_ref().map(|cb| {
-                let cb = Rc::clone(cb);
-                Box::new(move |pct| {
-                    if let Ok(mut cb) = cb.try_borrow_mut() {
-                        (cb)(pct);
-                    }
-                }) as ProgressFn
-            })
-        };
-
-        let run_inference = |use_gpu: bool| -> Result<(String, i32)> {
+        let run_inference = |use_gpu: bool, progress: Option<F>| -> Result<(String, i32)> {
             let mut ctx_params = whisper_rs::WhisperContextParameters::default();
             ctx_params.use_gpu(use_gpu);
             let ctx = whisper_rs::WhisperContext::new_with_params(model_path, ctx_params)
@@ -192,8 +177,7 @@ impl WhisperTranscriber {
                 use_gpu,
                 "starting whisper inference"
             );
-            let progress_cb = make_progress_cb(&progress);
-            params.set_progress_callback_safe::<Option<ProgressFn>, ProgressFn>(progress_cb);
+            params.set_progress_callback_safe::<Option<F>, F>(progress);
             if detect_language {
                 params.set_language(None);
                 params.set_detect_language(true);
@@ -217,12 +201,13 @@ impl WhisperTranscriber {
         };
 
         let mut used_gpu = true;
-        let (mut text, mut num_segments) = match run_inference(true) {
+        let mut progress = progress;
+        let (mut text, mut num_segments) = match run_inference(true, progress.take()) {
             Ok(result) => result,
             Err(err) => {
                 tracing::debug!(error = %err, "whisper inference failed with gpu; retrying on cpu");
                 used_gpu = false;
-                run_inference(false)?
+                run_inference(false, None)?
             }
         };
 
@@ -233,7 +218,7 @@ impl WhisperTranscriber {
                 avg_abs,
                 "whisper returned no segments with gpu; retrying on cpu"
             );
-            let (cpu_text, cpu_segments) = run_inference(false)?;
+            let (cpu_text, cpu_segments) = run_inference(false, None)?;
             text = cpu_text;
             num_segments = cpu_segments;
             used_gpu = false;
