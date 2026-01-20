@@ -194,8 +194,8 @@ impl TrayIcons {
 
     fn idle_for_theme(&self, theme: Theme) -> Icon {
         match theme {
-            Theme::Light => self.idle_light.clone(),
-            Theme::Dark => self.idle_dark.clone(),
+            Theme::Light => self.idle_dark.clone(),
+            Theme::Dark => self.idle_light.clone(),
         }
     }
 }
@@ -316,10 +316,29 @@ fn set_pixel(canvas: &mut [u8], x: i32, y: i32, color: [u8; 4]) {
 #[allow(unexpected_cfgs)]
 fn current_theme() -> Theme {
     use objc::{class, msg_send, sel, sel_impl};
-    use objc::runtime::{Object, BOOL};
-    use std::ffi::CString;
+    use objc::runtime::Object;
+    use std::ffi::{CStr, CString};
+    use std::os::raw::c_char;
 
     unsafe {
+        let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        if !app.is_null() {
+            let appearance: *mut Object = msg_send![app, effectiveAppearance];
+            if !appearance.is_null() {
+                let name: *mut Object = msg_send![appearance, name];
+                if !name.is_null() {
+                    let name_ptr: *const c_char = msg_send![name, UTF8String];
+                    if !name_ptr.is_null() {
+                        let name = CStr::from_ptr(name_ptr).to_string_lossy();
+                        if name.contains("Dark") {
+                            return Theme::Dark;
+                        }
+                        return Theme::Light;
+                    }
+                }
+            }
+        }
+
         let defaults: *mut Object = msg_send![class!(NSUserDefaults), standardUserDefaults];
         let key = CString::new("AppleInterfaceStyle").expect("cstring");
         let key_ns: *mut Object =
@@ -328,11 +347,12 @@ fn current_theme() -> Theme {
         if style.is_null() {
             return Theme::Light;
         }
-        let dark = CString::new("Dark").expect("cstring");
-        let dark_ns: *mut Object =
-            msg_send![class!(NSString), stringWithUTF8String: dark.as_ptr()];
-        let is_dark: BOOL = msg_send![style, isEqualToString: dark_ns];
-        if is_dark != 0 {
+        let style_ptr: *const c_char = msg_send![style, UTF8String];
+        if style_ptr.is_null() {
+            return Theme::Light;
+        }
+        let style = CStr::from_ptr(style_ptr).to_string_lossy();
+        if style.contains("Dark") {
             Theme::Dark
         } else {
             Theme::Light

@@ -505,6 +505,7 @@ impl App {
             })?;
             return Ok(());
         }
+        self.tray.sync_idle_theme()?;
         self.tray.set_state(TrayState::Idle)?;
         Ok(())
     }
