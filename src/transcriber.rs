@@ -93,6 +93,10 @@ impl WhisperTranscriber {
         params.set_n_threads(threads);
         params.set_suppress_blank(true);
         params.set_suppress_non_speech_tokens(true);
+        params.set_temperature(0.0);
+        params.set_temperature_inc(0.0);
+        params.set_logprob_thold(-0.8);
+        params.set_entropy_thold(2.0);
         if let Some(prompt) = prompt {
             let prompt = prompt.trim();
             if !prompt.is_empty() {
