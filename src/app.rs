@@ -27,6 +27,7 @@ use tao::event_loop::{ControlFlow, EventLoop};
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::MenuEvent;
+use tray_icon::{MouseButtonState, TrayIconEvent};
 
 #[derive(Debug)]
 enum WorkerEvent {
@@ -183,6 +184,13 @@ fn run_daemon(args: RunArgs) -> Result<()> {
         default_mic.as_deref(),
     )?;
     tray.set_state(TrayState::Downloading { progress: None })?;
+    let beep = match beep::BeepPlayer::new() {
+        Ok(player) => Some(player),
+        Err(err) => {
+            tracing::warn!(error = %err, "beep output unavailable");
+            None
+        }
+    };
 
     let (worker_tx, worker_rx) = unbounded();
     if let Some(auto_cfg) = config.auto_transcribe.clone() {
@@ -195,6 +203,7 @@ fn run_daemon(args: RunArgs) -> Result<()> {
             config,
             store,
             tray,
+            beep,
             downloading_model: true,
             model_download_progress: None,
             model_path: None,
@@ -217,6 +226,7 @@ struct App {
     config: Config,
     store: ConfigStore,
     tray: TrayController,
+    beep: Option<beep::BeepPlayer>,
     downloading_model: bool,
     model_download_progress: Option<u8>,
     model_path: Option<PathBuf>,
@@ -246,6 +256,7 @@ impl App {
             .context("register Command+Space")?;
         let hotkey_rx = GlobalHotKeyEvent::receiver();
         let menu_rx = MenuEvent::receiver();
+        let tray_rx = TrayIconEvent::receiver();
 
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(50));
@@ -258,6 +269,15 @@ impl App {
                         if ev.id == hotkey.id() && ev.state == HotKeyState::Pressed {
                             if let Err(err) = self.handle_hotkey() {
                                 tracing::error!(error = %err, "hotkey handler failed");
+                            }
+                        }
+                    }
+                    while let Ok(tray_event) = tray_rx.try_recv() {
+                        if let TrayIconEvent::Click { button_state, .. } = tray_event {
+                            if button_state == MouseButtonState::Down {
+                                if let Err(err) = self.refresh_mic_menu() {
+                                    tracing::error!(error = %err, "refresh mic menu failed");
+                                }
                             }
                         }
                     }
@@ -311,6 +331,18 @@ impl App {
                 self.handle_hotkey()?;
             }
         }
+        Ok(())
+    }
+
+    fn refresh_mic_menu(&mut self) -> Result<()> {
+        let devices = CpalRecorder::list_devices()?;
+        let default_mic = CpalRecorder::default_device_name()?;
+        self.tray.refresh_microphones(
+            &devices,
+            self.config.selected_mic.as_deref(),
+            default_mic.as_deref(),
+        )?;
+        self.update_tray_state()?;
         Ok(())
     }
 
@@ -415,7 +447,7 @@ impl App {
             return Ok(());
         }
         tracing::info!("start recording");
-        beep::play().ok();
+        self.play_beep();
         if self.config.selected_mic.is_none() {
             let current_default = CpalRecorder::default_device_name()?;
             self.tray.set_default_mic_label(current_default.as_deref());
@@ -442,11 +474,11 @@ impl App {
         self.transcription_progress = None;
         self.update_tray_state()?;
         tracing::info!("finalizing recording");
+        self.play_beep();
 
         thread::spawn(move || {
             let result: Result<HotkeyJob> = (|| {
                 let recorded = handle.stop()?;
-                beep::play().ok();
                 let (audio_path, text_path) = storage::next_recording_paths(&recordings_dir)?;
                 encode_m4a(&recorded, &audio_path)?;
                 Ok(HotkeyJob {
@@ -464,6 +496,14 @@ impl App {
             }
         });
         Ok(())
+    }
+
+    fn play_beep(&mut self) {
+        if let Some(player) = self.beep.as_mut() {
+            if let Err(err) = player.play() {
+                tracing::warn!(error = %err, "beep failed");
+            }
+        }
     }
 
     fn enqueue_auto_job(&mut self, spec: AutoJobSpec) -> Result<()> {

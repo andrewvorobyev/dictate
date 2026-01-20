@@ -29,10 +29,12 @@ pub enum TrayAction {
 
 pub struct TrayController {
     tray: TrayIcon,
+    menu: Menu,
     status_item: MenuItem,
     start_stop_item: MenuItem,
     default_mic_item: CheckMenuItem,
     mic_items: HashMap<MenuId, (String, CheckMenuItem)>,
+    mic_separator: PredefinedMenuItem,
     quit_id: MenuId,
     icons: TrayIcons,
     idle_theme: Theme,
@@ -51,38 +53,18 @@ impl TrayController {
         current_mic: Option<&str>,
         default_mic_label: Option<&str>,
     ) -> Result<Self> {
-        let status_item = MenuItem::new("Status: Idle", false, None);
-        let start_stop_item = MenuItem::new("Start Recording (Option+Space)", true, None);
-        let quit_item = PredefinedMenuItem::quit(None);
-        let quit_id = quit_item.id().clone();
-
-        let menu = Menu::new();
-        menu.append(&status_item)?;
-        menu.append(&start_stop_item)?;
-        menu.append(&PredefinedMenuItem::separator())?;
-        let mic_header = MenuItem::new("Microphones", false, None);
-        menu.append(&mic_header)?;
-        let default_label = match default_mic_label {
-            Some(name) => format!("System Default ({name})"),
-            None => "System Default".to_string(),
-        };
-        let default_mic_item =
-            CheckMenuItem::new(default_label, true, current_mic.is_none(), None);
-        menu.append(&default_mic_item)?;
-        let mut mic_items = HashMap::new();
-        for dev in devices {
-            let checked = current_mic.map(|m| m == dev.name).unwrap_or(false);
-            let item = CheckMenuItem::new(dev.name.clone(), true, checked, None);
-            menu.append(&item)?;
-            mic_items.insert(item.id().clone(), (dev.name.clone(), item.clone()));
-        }
-        menu.append(&PredefinedMenuItem::separator())?;
-        menu.append(&quit_item)?;
+        let menu_parts = Self::build_menu(
+            devices,
+            current_mic,
+            default_mic_label,
+            "Status: Idle",
+            "Start Recording (Option+Space)",
+        )?;
 
         let icons = TrayIcons::new()?;
         let idle_theme = current_theme();
         let tray = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
+            .with_menu(Box::new(menu_parts.menu.clone()))
             .with_tooltip("Dictate")
             .with_icon(icons.idle_for_theme(idle_theme))
             .build()
@@ -90,14 +72,51 @@ impl TrayController {
 
         Ok(Self {
             tray,
-            status_item,
-            start_stop_item,
-            default_mic_item,
-            mic_items,
-            quit_id,
+            menu: menu_parts.menu,
+            status_item: menu_parts.status_item,
+            start_stop_item: menu_parts.start_stop_item,
+            default_mic_item: menu_parts.default_mic_item,
+            mic_items: menu_parts.mic_items,
+            mic_separator: menu_parts.mic_separator,
+            quit_id: menu_parts.quit_id,
             icons,
             idle_theme,
         })
+    }
+
+    pub fn refresh_microphones(
+        &mut self,
+        devices: &[AudioDevice],
+        current_mic: Option<&str>,
+        default_mic_label: Option<&str>,
+    ) -> Result<()> {
+        let default_label = match default_mic_label {
+            Some(name) => format!("System Default ({name})"),
+            None => "System Default".to_string(),
+        };
+        self.default_mic_item.set_text(default_label);
+        self.default_mic_item.set_checked(current_mic.is_none());
+
+        let old_items = std::mem::take(&mut self.mic_items);
+        for (_, (_, item)) in old_items {
+            self.menu.remove(&item)?;
+        }
+
+        let insert_pos = self
+            .menu
+            .items()
+            .iter()
+            .position(|item| item.id() == self.mic_separator.id())
+            .unwrap_or_else(|| self.menu.items().len());
+        let mut new_items = HashMap::new();
+        for (idx, dev) in devices.iter().enumerate() {
+            let checked = current_mic.map(|m| m == dev.name).unwrap_or(false);
+            let item = CheckMenuItem::new(dev.name.clone(), true, checked, None);
+            self.menu.insert(&item, insert_pos + idx)?;
+            new_items.insert(item.id().clone(), (dev.name.clone(), item.clone()));
+        }
+        self.mic_items = new_items;
+        Ok(())
     }
 
     pub fn action_for_menu(&self, id: MenuId) -> Option<TrayAction> {
@@ -197,6 +216,65 @@ impl TrayIcons {
             Theme::Light => self.idle_dark.clone(),
             Theme::Dark => self.idle_light.clone(),
         }
+    }
+}
+
+struct MenuParts {
+    menu: Menu,
+    status_item: MenuItem,
+    start_stop_item: MenuItem,
+    default_mic_item: CheckMenuItem,
+    mic_items: HashMap<MenuId, (String, CheckMenuItem)>,
+    mic_separator: PredefinedMenuItem,
+    quit_id: MenuId,
+}
+
+impl TrayController {
+    fn build_menu(
+        devices: &[AudioDevice],
+        current_mic: Option<&str>,
+        default_mic_label: Option<&str>,
+        status_label: &str,
+        start_stop_label: &str,
+    ) -> Result<MenuParts> {
+        let status_item = MenuItem::new(status_label, false, None);
+        let start_stop_item = MenuItem::new(start_stop_label, true, None);
+        let quit_item = PredefinedMenuItem::quit(None);
+        let quit_id = quit_item.id().clone();
+
+        let menu = Menu::new();
+        menu.append(&status_item)?;
+        menu.append(&start_stop_item)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+        let mic_header = MenuItem::new("Microphones", false, None);
+        menu.append(&mic_header)?;
+        let default_label = match default_mic_label {
+            Some(name) => format!("System Default ({name})"),
+            None => "System Default".to_string(),
+        };
+        let default_mic_item =
+            CheckMenuItem::new(default_label, true, current_mic.is_none(), None);
+        menu.append(&default_mic_item)?;
+        let mut mic_items = HashMap::new();
+        for dev in devices {
+            let checked = current_mic.map(|m| m == dev.name).unwrap_or(false);
+            let item = CheckMenuItem::new(dev.name.clone(), true, checked, None);
+            menu.append(&item)?;
+            mic_items.insert(item.id().clone(), (dev.name.clone(), item.clone()));
+        }
+        let mic_separator = PredefinedMenuItem::separator();
+        menu.append(&mic_separator)?;
+        menu.append(&quit_item)?;
+
+        Ok(MenuParts {
+            menu,
+            status_item,
+            start_stop_item,
+            default_mic_item,
+            mic_items,
+            mic_separator,
+            quit_id,
+        })
     }
 }
 
