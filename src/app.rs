@@ -14,6 +14,7 @@ use clap::Parser;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use indicatif::{ProgressBar, ProgressStyle};
 use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::fs;
@@ -73,10 +74,37 @@ fn run_transcribe(args: TranscribeArgs) -> Result<()> {
     let models_dir = default_models_dir()?;
     let model_path = model::ensure_model(&models_dir, &model)?;
     let transcriber = WhisperTranscriber::new(model_path)?;
-    let text = transcriber.transcribe_file_with_prompt(
+    let pb = ProgressBar::new(100);
+    let style = ProgressStyle::with_template("{spinner} {bar:40} {pos}% {msg}")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("=>-")
+        .tick_strings(&["-", "\\", "|", "/"]);
+    pb.set_style(style);
+    pb.set_message("transcribing");
+    pb.enable_steady_tick(Duration::from_millis(120));
+    let pb_ref = pb.clone();
+    let text = match transcriber.transcribe_file_with_progress_and_prompt(
         &args.input,
+        Some(move |pct| {
+            let pct = if pct < 0 {
+                0
+            } else if pct > 100 {
+                100
+            } else {
+                pct
+            };
+            pb_ref.set_position(pct as u64);
+        }),
         vocabulary_prompt.as_deref(),
-    )?;
+        args.language.as_deref(),
+    ) {
+        Ok(text) => text,
+        Err(err) => {
+            pb.finish_and_clear();
+            return Err(err);
+        }
+    };
+    pb.finish_and_clear();
     let output = storage::transcript_path_for_input(&args.input)?;
     fs::write(&output, &text)
         .with_context(|| format!("write transcript {}", output.display()))?;
@@ -563,8 +591,9 @@ fn transcribe_hotkey(
     let transcriber = WhisperTranscriber::new(model_path)?;
     let worker_progress = tx.clone();
     let mut last_pct: Option<i32> = None;
-    let text =
-        transcriber.transcribe_file_with_progress_and_prompt(&job.audio_path, Some(move |pct| {
+    let text = transcriber.transcribe_file_with_progress_and_prompt(
+        &job.audio_path,
+        Some(move |pct| {
             if last_pct == Some(pct) {
                 return;
             }
@@ -572,7 +601,10 @@ fn transcribe_hotkey(
             let _ = worker_progress.send(WorkerEvent::TranscriptionProgress(
                 pct.clamp(0, 100) as u8,
             ));
-        }), prompt)?;
+        }),
+        prompt,
+        None,
+    )?;
     fs::write(&job.text_path, &text)
         .with_context(|| format!("write transcript {}", job.text_path.display()))?;
     tx.send(WorkerEvent::HotkeyTranscriptionDone { text })
@@ -589,8 +621,9 @@ fn transcribe_auto(
     let transcriber = WhisperTranscriber::new(model_path)?;
     let worker_progress = tx.clone();
     let mut last_pct: Option<i32> = None;
-    let text =
-        transcriber.transcribe_file_with_progress_and_prompt(&job.input_path, Some(move |pct| {
+    let text = transcriber.transcribe_file_with_progress_and_prompt(
+        &job.input_path,
+        Some(move |pct| {
             if last_pct == Some(pct) {
                 return;
             }
@@ -598,7 +631,10 @@ fn transcribe_auto(
             let _ = worker_progress.send(WorkerEvent::TranscriptionProgress(
                 pct.clamp(0, 100) as u8,
             ));
-        }), prompt)?;
+        }),
+        prompt,
+        None,
+    )?;
     if let Some(parent) = job.output_path.parent() {
         storage::ensure_dir(parent)?;
     }

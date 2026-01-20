@@ -25,7 +25,7 @@ impl WhisperTranscriber {
     }
 
     pub fn transcribe_file(&self, path: &Path) -> Result<String> {
-        self.transcribe_file_with_progress_and_prompt(path, None::<fn(i32)>, None)
+        self.transcribe_file_with_progress_and_prompt(path, None::<fn(i32)>, None, None)
     }
 
     pub fn transcribe_file_with_prompt(
@@ -33,7 +33,7 @@ impl WhisperTranscriber {
         path: &Path,
         prompt: Option<&str>,
     ) -> Result<String> {
-        self.transcribe_file_with_progress_and_prompt(path, None::<fn(i32)>, prompt)
+        self.transcribe_file_with_progress_and_prompt(path, None::<fn(i32)>, prompt, None)
     }
 
     pub fn transcribe_file_with_progress<F>(
@@ -44,7 +44,7 @@ impl WhisperTranscriber {
     where
         F: FnMut(i32) + 'static,
     {
-        self.transcribe_file_with_progress_and_prompt(path, progress, None)
+        self.transcribe_file_with_progress_and_prompt(path, progress, None, None)
     }
 
     pub fn transcribe_file_with_progress_and_prompt<F>(
@@ -52,13 +52,14 @@ impl WhisperTranscriber {
         path: &Path,
         progress: Option<F>,
         prompt: Option<&str>,
+        language: Option<&str>,
     ) -> Result<String>
     where
         F: FnMut(i32) + 'static,
     {
         let (samples, sample_rate) = decode_to_mono_f32(path)?;
         let samples_16k = resample_to_16k(samples, sample_rate)?;
-        self.transcribe_samples_with_progress(&samples_16k, progress, prompt)
+        self.transcribe_samples_with_progress(&samples_16k, progress, prompt, language)
     }
 
     fn transcribe_samples_with_progress<F>(
@@ -66,6 +67,7 @@ impl WhisperTranscriber {
         samples: &[f32],
         progress: Option<F>,
         prompt: Option<&str>,
+        language: Option<&str>,
     ) -> Result<String>
     where
         F: FnMut(i32) + 'static,
@@ -102,6 +104,21 @@ impl WhisperTranscriber {
             if !prompt.is_empty() {
                 params.set_initial_prompt(prompt);
             }
+        }
+        let language = language.and_then(|lang| {
+            let lang = lang.trim();
+            if lang.is_empty() || lang.eq_ignore_ascii_case("auto") {
+                None
+            } else {
+                Some(lang)
+            }
+        });
+        if let Some(language) = language {
+            params.set_language(Some(language));
+            params.set_detect_language(false);
+        } else {
+            params.set_language(None);
+            params.set_detect_language(true);
         }
         params.set_progress_callback_safe::<Option<F>, F>(progress);
         state
