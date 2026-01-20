@@ -70,6 +70,7 @@ impl WhisperTranscriber {
     where
         F: FnMut(i32) + 'static,
     {
+        let _silence = StderrSilencer::new();
         let model_path = self
             .model_path
             .to_str()
@@ -77,7 +78,7 @@ impl WhisperTranscriber {
         let mut ctx_params = whisper_rs::WhisperContextParameters::default();
         ctx_params.use_gpu(true);
         let ctx = whisper_rs::WhisperContext::new_with_params(model_path, ctx_params)
-        .with_context(|| format!("load whisper model {model_path}"))?;
+            .with_context(|| format!("load whisper model {model_path}"))?;
         unsafe {
             set_metal_log_callback();
         }
@@ -156,6 +157,51 @@ unsafe extern "C" fn whisper_log_silent(
     _text: *const c_char,
     _user_data: *mut c_void,
 ) {
+}
+
+struct StderrSilencer {
+    #[cfg(unix)]
+    original_fd: i32,
+    #[cfg(unix)]
+    null_fd: i32,
+}
+
+impl StderrSilencer {
+    fn new() -> Option<Self> {
+        #[cfg(unix)]
+        unsafe {
+            let original_fd = libc::dup(libc::STDERR_FILENO);
+            if original_fd < 0 {
+                return None;
+            }
+            let null_fd = libc::open(b"/dev/null\0".as_ptr().cast(), libc::O_WRONLY);
+            if null_fd < 0 {
+                libc::close(original_fd);
+                return None;
+            }
+            if libc::dup2(null_fd, libc::STDERR_FILENO) < 0 {
+                libc::close(original_fd);
+                libc::close(null_fd);
+                return None;
+            }
+            Some(Self { original_fd, null_fd })
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StderrSilencer {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = libc::dup2(self.original_fd, libc::STDERR_FILENO);
+            let _ = libc::close(self.original_fd);
+            let _ = libc::close(self.null_fd);
+        }
+    }
 }
 
 fn is_noisy_metal_log(msg: &str) -> bool {

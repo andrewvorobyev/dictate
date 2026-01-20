@@ -627,6 +627,7 @@ dependencies = [
  "global-hotkey",
  "hound",
  "indicatif",
+ "libc",
  "notify",
  "objc",
  "regex",
