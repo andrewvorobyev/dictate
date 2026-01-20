@@ -5,7 +5,6 @@ use std::fs::File;
 use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::Once;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::{env, fs};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
@@ -79,6 +78,9 @@ impl WhisperTranscriber {
         ctx_params.use_gpu(true);
         let ctx = whisper_rs::WhisperContext::new_with_params(model_path, ctx_params)
         .with_context(|| format!("load whisper model {model_path}"))?;
+        unsafe {
+            set_metal_log_callback();
+        }
         let mut state = ctx
             .create_state()
             .context("create whisper state")?;
@@ -88,6 +90,8 @@ impl WhisperTranscriber {
             .map(|n| n.get() as i32)
             .unwrap_or(4);
         params.set_n_threads(threads);
+        params.set_suppress_blank(true);
+        params.set_suppress_non_speech_tokens(true);
         if let Some(prompt) = prompt {
             let prompt = prompt.trim();
             if !prompt.is_empty() {
@@ -112,14 +116,13 @@ impl WhisperTranscriber {
 }
 
 static WHISPER_RUNTIME_INIT: Once = Once::new();
-static GPU_LOGGED: AtomicBool = AtomicBool::new(false);
-static GPU_ERROR_LOGGED: AtomicBool = AtomicBool::new(false);
 
 fn init_whisper_runtime() {
     WHISPER_RUNTIME_INIT.call_once(|| {
         ensure_metal_resources();
         unsafe {
             whisper_rs::set_log_callback(Some(whisper_log_filtered), std::ptr::null_mut());
+            set_metal_log_callback();
         }
     });
 }
@@ -134,25 +137,59 @@ unsafe extern "C" fn whisper_log_filtered(
     }
     let line = unsafe { CStr::from_ptr(text) }.to_string_lossy();
     let msg = line.trim();
-
-    if let Some(name) = msg.strip_prefix("ggml_metal_init: GPU name:") {
-        if GPU_LOGGED
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            tracing::info!(gpu = name.trim(), "GPU enabled (Metal)");
-        }
+    if msg.is_empty() || is_noisy_metal_log(msg) {
         return;
     }
-
-    if msg.contains("ggml_metal_init: error:") {
-        if GPU_ERROR_LOGGED
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            tracing::warn!(error = msg, "Metal initialization error");
+    match _level {
+        whisper_rs::whisper_rs_sys::ggml_log_level_GGML_LOG_LEVEL_ERROR => {
+            tracing::error!(message = msg, "whisper");
         }
+        whisper_rs::whisper_rs_sys::ggml_log_level_GGML_LOG_LEVEL_WARN => {
+            tracing::warn!(message = msg, "whisper");
+        }
+        _ => {}
     }
+}
+
+unsafe extern "C" fn whisper_log_silent(
+    _level: whisper_rs::whisper_rs_sys::ggml_log_level,
+    _text: *const c_char,
+    _user_data: *mut c_void,
+) {
+}
+
+fn is_noisy_metal_log(msg: &str) -> bool {
+    msg.starts_with("ggml_metal_")
+        || msg.starts_with("ggml_backend_metal_")
+        || msg.contains("GGML_METAL_PATH_RESOURCES")
+        || msg.contains("ggml-metal.metal")
+        || msg.contains("Metal backend")
+        || msg.contains("Metal GPU")
+        || msg.contains("ggml_backend_metal")
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn set_metal_log_callback() {
+    unsafe {
+        ggml_metal_log_set_callback(Some(whisper_log_silent), std::ptr::null_mut());
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+unsafe fn set_metal_log_callback() {}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn ggml_metal_log_set_callback(
+        callback: Option<
+            unsafe extern "C" fn(
+                level: whisper_rs::whisper_rs_sys::ggml_log_level,
+                text: *const c_char,
+                user_data: *mut c_void,
+            ),
+        >,
+        user_data: *mut c_void,
+    );
 }
 
 fn ensure_metal_resources() {

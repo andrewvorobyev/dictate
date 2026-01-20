@@ -98,6 +98,10 @@ impl JobQueue {
         self.active
     }
 
+    pub fn auto_queue_len(&self) -> usize {
+        self.auto_queue.len()
+    }
+
     pub fn complete_active(&mut self, kind: JobKind) {
         if self.active == Some(kind) {
             self.active = None;

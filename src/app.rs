@@ -179,6 +179,7 @@ fn run_daemon(args: RunArgs) -> Result<()> {
             auto_inflight: HashSet::new(),
             vocabulary_prompt,
             last_theme_check: Instant::now(),
+            hotkey_pending: false,
         };
 
     app.event_loop()
@@ -200,6 +201,7 @@ struct App {
     auto_inflight: HashSet<PathBuf>,
     vocabulary_prompt: Option<String>,
     last_theme_check: Instant,
+    hotkey_pending: bool,
 }
 
 impl App {
@@ -315,6 +317,7 @@ impl App {
             WorkerEvent::HotkeyRecordingError(err) => {
                 tracing::error!(error = %err, "recording failed");
                 self.queue.cancel_hotkey_session();
+                self.hotkey_pending = false;
                 self.update_tray_state()?;
             }
             WorkerEvent::AutoFileDetected(spec) => {
@@ -407,6 +410,8 @@ impl App {
         let handle = self.recording.take().context("no recording in progress")?;
         let recordings_dir = self.recordings_dir.clone();
         let worker_tx = self.worker_tx.clone();
+        self.hotkey_pending = true;
+        self.transcription_progress = None;
         self.update_tray_state()?;
         tracing::info!("finalizing recording");
 
@@ -464,6 +469,13 @@ impl App {
             Some(job) => job,
             None => return Ok(()),
         };
+        if matches!(job, Job::Hotkey(_)) {
+            self.hotkey_pending = false;
+        }
+        if let Job::Auto(_) = job {
+            let total = self.queue.auto_queue_len() + 1;
+            tracing::info!("auto transcription: processing 1 of {total}");
+        }
         self.transcription_progress = None;
         self.update_tray_state()?;
         spawn_transcription(job, model_path, self.vocabulary_prompt.clone(), self.worker_tx.clone());
@@ -473,6 +485,12 @@ impl App {
     fn update_tray_state(&mut self) -> Result<()> {
         if self.recording.is_some() {
             self.tray.set_state(TrayState::Recording)?;
+            return Ok(());
+        }
+        if self.hotkey_pending {
+            self.tray.set_state(TrayState::Transcribing {
+                progress: self.transcription_progress,
+            })?;
             return Ok(());
         }
         if self.queue.active_kind().is_some() {
@@ -506,6 +524,7 @@ impl App {
 
     fn is_idle(&self) -> bool {
         self.recording.is_none()
+            && !self.hotkey_pending
             && self.queue.active_kind().is_none()
             && !self.downloading_model
     }
