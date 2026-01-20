@@ -1,5 +1,5 @@
 set shell := ["zsh", "-uc"]
-export RUST_LOG := "info"
+export RUST_LOG := "{{ env_var_or_default('RUST_LOG', 'info') }}"
 
 default: run
 
