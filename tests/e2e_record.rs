@@ -30,8 +30,7 @@ fn e2e_record_and_transcribe() -> Result<()> {
 
 #[test]
 fn e2e_transcribe_fixture_audio() -> Result<()> {
-    let audio_path =
-        Path::new(".recordings/2026-01-20T12-30-50.419-0800.m4a");
+    let audio_path = Path::new("tests/fixtures/1234.m4a");
     if !audio_path.exists() {
         return Err(anyhow!(
             "missing test audio at {}",

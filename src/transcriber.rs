@@ -59,8 +59,26 @@ impl WhisperTranscriber {
     where
         F: FnMut(i32) + 'static,
     {
+        tracing::debug!(path = %path.display(), "decoding audio");
         let (samples, sample_rate) = decode_to_mono_f32(path)?;
+        let raw_duration = if sample_rate == 0 {
+            0.0
+        } else {
+            samples.len() as f32 / sample_rate as f32
+        };
+        tracing::debug!(
+            sample_rate,
+            samples = samples.len(),
+            duration_sec = raw_duration,
+            "decoded audio"
+        );
         let samples_16k = resample_to_16k(samples, sample_rate)?;
+        let duration_16k = samples_16k.len() as f32 / 16_000.0;
+        tracing::debug!(
+            samples = samples_16k.len(),
+            duration_sec = duration_16k,
+            "resampled audio"
+        );
         self.transcribe_samples_with_progress(&samples_16k, progress, prompt, language)
     }
 
@@ -162,6 +180,18 @@ impl WhisperTranscriber {
             if let Some(prompt) = prompt {
                 params.set_initial_prompt(prompt);
             }
+            tracing::debug!(
+                model = %model_path,
+                threads,
+                prompt_len,
+                language = language_label,
+                detect_language,
+                duration_sec,
+                max_abs,
+                avg_abs,
+                use_gpu,
+                "starting whisper inference"
+            );
             let progress_cb = make_progress_cb(&progress);
             params.set_progress_callback_safe::<Option<ProgressFn>, ProgressFn>(progress_cb);
             if detect_language {
@@ -190,18 +220,36 @@ impl WhisperTranscriber {
         let (mut text, mut num_segments) = match run_inference(true) {
             Ok(result) => result,
             Err(err) => {
+                tracing::debug!(error = %err, "whisper inference failed with gpu; retrying on cpu");
                 used_gpu = false;
                 run_inference(false)?
             }
         };
 
         if num_segments == 0 && used_gpu {
+            tracing::debug!(
+                duration_sec,
+                max_abs,
+                avg_abs,
+                "whisper returned no segments with gpu; retrying on cpu"
+            );
             let (cpu_text, cpu_segments) = run_inference(false)?;
             text = cpu_text;
             num_segments = cpu_segments;
             used_gpu = false;
         }
 
+        if num_segments == 0 {
+            tracing::debug!(
+                duration_sec,
+                max_abs,
+                avg_abs,
+                use_gpu = used_gpu,
+                "whisper returned no segments"
+            );
+        } else {
+            tracing::debug!(num_segments, use_gpu = used_gpu, "whisper returned segments");
+        }
         Ok(text)
     }
 }

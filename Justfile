@@ -1,5 +1,5 @@
 set shell := ["zsh", "-uc"]
-export RUST_LOG := "warn"
+export RUST_LOG := "info"
 
 default: run
 
