@@ -67,6 +67,7 @@ impl TrayController {
             .with_menu(Box::new(menu_parts.menu.clone()))
             .with_tooltip("Dictate")
             .with_icon(icons.idle_for_theme(idle_theme))
+            .with_icon_as_template(true)
             .build()
             .context("create tray icon")?;
 
@@ -152,21 +153,20 @@ impl TrayController {
     pub fn set_state(&self, state: TrayState) -> Result<()> {
         match state {
             TrayState::Idle => {
-                self.tray
-                    .set_icon(Some(self.icons.idle_for_theme(self.idle_theme)))?;
+                self.apply_icon(self.icons.idle_for_theme(self.idle_theme), true)?;
                 self.status_item.set_text("Status: Idle");
                 self.start_stop_item
                     .set_text("Start Recording (Option+Space)");
             }
             TrayState::Recording => {
-                self.tray.set_icon(Some(self.icons.recording.clone()))?;
+                self.apply_icon(self.icons.recording.clone(), false)?;
                 self.status_item.set_text("Status: Recording");
                 self.start_stop_item
                     .set_text("Stop Recording (Option+Space)");
             }
             TrayState::Transcribing { progress } => {
                 let icon = icon_transcribing(progress)?;
-                self.tray.set_icon(Some(icon))?;
+                self.apply_icon(icon, false)?;
                 let label = match progress {
                     Some(p) => format!("Status: Transcribing {p}%"),
                     None => "Status: Transcribing".to_string(),
@@ -176,8 +176,7 @@ impl TrayController {
                     .set_text("Start Recording (Option+Space)");
             }
             TrayState::Downloading { progress } => {
-                self.tray
-                    .set_icon(Some(self.icons.downloading.clone()))?;
+                self.apply_icon(self.icons.downloading.clone(), false)?;
                 let label = match progress {
                     Some(p) => format!("Status: Loading model {p}%"),
                     None => "Status: Loading model".to_string(),
@@ -194,9 +193,14 @@ impl TrayController {
         let theme = current_theme();
         if theme != self.idle_theme {
             self.idle_theme = theme;
-            self.tray
-                .set_icon(Some(self.icons.idle_for_theme(self.idle_theme)))?;
+            self.apply_icon(self.icons.idle_for_theme(self.idle_theme), true)?;
         }
+        Ok(())
+    }
+
+    fn apply_icon(&self, icon: Icon, is_template: bool) -> Result<()> {
+        self.tray.set_icon(Some(icon))?;
+        self.tray.set_icon_as_template(is_template);
         Ok(())
     }
 }
