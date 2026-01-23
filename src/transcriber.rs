@@ -4,6 +4,7 @@ use std::ffi::CStr;
 use std::fs::File;
 use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
+use std::cmp::Ordering;
 use std::sync::Once;
 use std::{env, fs};
 use symphonia::core::audio::SampleBuffer;
@@ -79,6 +80,24 @@ impl WhisperTranscriber {
             duration_sec = duration_16k,
             "resampled audio"
         );
+        let mut samples_16k = samples_16k;
+        if let Some(trim) = trim_silence(&mut samples_16k, 16_000) {
+            tracing::debug!(
+                trimmed_samples = trim.trimmed_samples,
+                trimmed_leading_samples = trim.trimmed_leading_samples,
+                trimmed_trailing_samples = trim.trimmed_trailing_samples,
+                trimmed_sec = trim.trimmed_samples as f32 / 16_000.0,
+                threshold = trim.threshold,
+                noise_floor = trim.noise_floor,
+                leading_frames = trim.leading_frames,
+                trailing_frames = trim.trailing_frames,
+                "trimmed leading/trailing silence"
+            );
+        }
+        if samples_16k.is_empty() {
+            tracing::debug!("audio is silent after trimming; skipping inference");
+            return Ok(String::new());
+        }
         self.transcribe_samples_with_progress(&samples_16k, progress, prompt, language)
     }
 
@@ -485,6 +504,137 @@ fn resample_to_16k(input: Vec<f32>, sample_rate: u32) -> Result<Vec<f32>> {
         SincFixedIn::<f32>::new(16_000.0 / sample_rate as f64, 1.0, params, input.len(), 1)?;
     let out = resampler.process(&[input], None)?;
     Ok(out.into_iter().next().unwrap_or_default())
+}
+
+struct TrimResult {
+    trimmed_samples: usize,
+    trimmed_leading_samples: usize,
+    trimmed_trailing_samples: usize,
+    threshold: f32,
+    noise_floor: f32,
+    leading_frames: usize,
+    trailing_frames: usize,
+}
+
+fn trim_silence(samples: &mut Vec<f32>, sample_rate: u32) -> Option<TrimResult> {
+    if samples.is_empty() || sample_rate == 0 {
+        return None;
+    }
+    let original_len = samples.len();
+    let frame_ms = 20usize;
+    let frame_len = (sample_rate as usize * frame_ms) / 1000;
+    if frame_len == 0 {
+        return None;
+    }
+    let num_frames = (samples.len() + frame_len - 1) / frame_len;
+    if num_frames == 0 {
+        return None;
+    }
+
+    let mut energies = Vec::with_capacity(num_frames);
+    for i in 0..num_frames {
+        let start = i * frame_len;
+        let end = std::cmp::min(start + frame_len, samples.len());
+        if start >= end {
+            energies.push(0.0);
+            continue;
+        }
+        let mut sum = 0.0f32;
+        for &sample in &samples[start..end] {
+            sum += sample.abs();
+        }
+        energies.push(sum / (end - start) as f32);
+    }
+
+    let mut sorted = energies.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    let noise_idx = ((sorted.len() as f32 - 1.0) * 0.1).round() as usize;
+    let noise_floor = sorted[noise_idx.min(sorted.len() - 1)];
+    let threshold = (noise_floor * 2.5).max(0.002);
+
+    let mut first_loud: Option<usize> = None;
+    let mut last_loud: Option<usize> = None;
+    for (idx, &energy) in energies.iter().enumerate() {
+        if energy >= threshold {
+            if first_loud.is_none() {
+                first_loud = Some(idx);
+            }
+            last_loud = Some(idx);
+        }
+    }
+
+    let Some(first_loud) = first_loud else {
+        samples.clear();
+        return Some(TrimResult {
+            trimmed_samples: original_len,
+            trimmed_leading_samples: original_len,
+            trimmed_trailing_samples: 0,
+            threshold,
+            noise_floor,
+            leading_frames: num_frames,
+            trailing_frames: 0,
+        });
+    };
+    let last_loud = last_loud.unwrap_or(first_loud);
+
+    let min_leading_silence_ms = 300usize;
+    let min_trailing_silence_ms = 400usize;
+    let pad_before_ms = 200usize;
+    let pad_after_ms = 120usize;
+
+    let min_leading_frames = (min_leading_silence_ms + frame_ms - 1) / frame_ms;
+    let min_trailing_frames = (min_trailing_silence_ms + frame_ms - 1) / frame_ms;
+    let pad_before_frames = (pad_before_ms + frame_ms - 1) / frame_ms;
+    let pad_after_frames = (pad_after_ms + frame_ms - 1) / frame_ms;
+
+    let leading_frames = first_loud;
+    let trailing_frames = num_frames.saturating_sub(last_loud + 1);
+
+    let start_frame = if leading_frames >= min_leading_frames {
+        first_loud.saturating_sub(pad_before_frames)
+    } else {
+        0
+    };
+    let end_frame = if trailing_frames >= min_trailing_frames {
+        (last_loud + 1 + pad_after_frames).min(num_frames)
+    } else {
+        num_frames
+    };
+
+    if start_frame == 0 && end_frame == num_frames {
+        return None;
+    }
+
+    let start_sample = (start_frame * frame_len).min(samples.len());
+    let end_sample = (end_frame * frame_len).min(samples.len());
+    if start_sample >= end_sample {
+        samples.clear();
+        return Some(TrimResult {
+            trimmed_samples: original_len,
+            trimmed_leading_samples: original_len,
+            trimmed_trailing_samples: 0,
+            threshold,
+            noise_floor,
+            leading_frames,
+            trailing_frames,
+        });
+    }
+
+    let trimmed_leading_samples = start_sample;
+    let trimmed_trailing_samples = original_len - end_sample;
+    let keep_len = end_sample - start_sample;
+    samples.copy_within(start_sample..end_sample, 0);
+    samples.truncate(keep_len);
+    let trimmed_samples = trimmed_leading_samples + trimmed_trailing_samples;
+    Some(TrimResult {
+        trimmed_samples,
+        trimmed_leading_samples,
+        trimmed_trailing_samples,
+        threshold,
+        noise_floor,
+        leading_frames,
+        trailing_frames,
+    })
 }
 
 #[cfg(test)]
