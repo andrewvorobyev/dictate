@@ -490,6 +490,7 @@ fn resample_to_16k(input: Vec<f32>, sample_rate: u32) -> Result<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::ensure;
     use tempfile::tempdir;
 
     #[test]
@@ -498,10 +499,25 @@ mod tests {
         let dir = tempdir()?;
         let wav = dir.path().join("silence.wav");
         write_silence_wav(&wav)?;
-        let model_dir = dir.path().join("models");
-        let model_path = crate::model::ensure_model(&model_dir, "tiny")?;
+        let model_dir = PathBuf::from(".models");
+        let preferred = ["tiny", "base", "small", "turbo", "medium", "large"];
+        let model_name = preferred
+            .iter()
+            .copied()
+            .find(|name| {
+                crate::model::model_info(name)
+                    .map(|info| model_dir.join(info.filename).exists())
+                    .unwrap_or(false)
+            })
+            .unwrap_or("tiny");
+        let model_path = crate::model::ensure_model(&model_dir, model_name)?;
         let transcriber = WhisperTranscriber::new(model_path)?;
-        let _ = transcriber.transcribe_file(&wav)?;
+        let text = transcriber.transcribe_file(&wav)?;
+        let has_alnum = text.chars().any(|c| c.is_alphanumeric());
+        ensure!(
+            !has_alnum,
+            "expected silence (no alphanumeric tokens), got: {text:?}"
+        );
         Ok(())
     }
 

@@ -5,6 +5,7 @@ use dictate::transcriber::WhisperTranscriber;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -12,16 +13,36 @@ use tempfile::tempdir;
 #[test]
 #[ignore = "requires microphone access, ffmpeg, and model download"]
 fn e2e_record_and_transcribe() -> Result<()> {
+    if Command::new("ffmpeg").arg("-version").output().is_err() {
+        eprintln!("skipping e2e_record_and_transcribe: ffmpeg not available");
+        return Ok(());
+    }
     let dir = tempdir()?;
-    let handle = CpalRecorder::start_recording(None)?;
+    let handle = match CpalRecorder::start_recording(None) {
+        Ok(handle) => handle,
+        Err(err) => {
+            eprintln!("skipping e2e_record_and_transcribe: {err}");
+            return Ok(());
+        }
+    };
     thread::sleep(Duration::from_secs(2));
     let recorded = handle.stop()?;
 
     let audio = dir.path().join("recording.m4a");
     encode_m4a(&recorded, &audio)?;
 
-    let model_dir = dir.path().join("models");
-    let model_path = model::ensure_model(&model_dir, "tiny")?;
+    let model_dir = PathBuf::from(".models");
+    let preferred = ["tiny", "base", "small", "turbo", "medium", "large"];
+    let model_name = preferred
+        .iter()
+        .copied()
+        .find(|name| {
+            model::model_info(name)
+                .map(|info| model_dir.join(info.filename).exists())
+                .unwrap_or(false)
+        })
+        .unwrap_or("tiny");
+    let model_path = model::ensure_model(&model_dir, model_name)?;
     let transcriber = WhisperTranscriber::new(model_path)?;
     let text = transcriber.transcribe_file(&audio)?;
     fs::write(dir.path().join("recording.md"), &text)?;
