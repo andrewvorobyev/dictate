@@ -16,7 +16,6 @@ pub struct Config {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AutoTranscribeConfig {
-    pub processed_dir: PathBuf,
     pub watches: Vec<WatchPair>,
 }
 
@@ -24,6 +23,7 @@ pub struct AutoTranscribeConfig {
 pub struct WatchPair {
     pub input_dir: PathBuf,
     pub output_dir: PathBuf,
+    pub processed_dir: PathBuf,
 }
 
 impl Default for Config {
@@ -92,10 +92,10 @@ mod tests {
         cfg.recordings_dir = PathBuf::from("custom");
         cfg.vocabulary = vec!["Dictate".to_string(), "Whisper".to_string()];
         cfg.auto_transcribe = Some(AutoTranscribeConfig {
-            processed_dir: PathBuf::from("processed"),
             watches: vec![WatchPair {
                 input_dir: PathBuf::from("input"),
                 output_dir: PathBuf::from("output"),
+                processed_dir: PathBuf::from("processed"),
             }],
         });
         store.save(&cfg)?;
@@ -108,15 +108,12 @@ mod tests {
             loaded
                 .auto_transcribe
                 .as_ref()
-                .map(|c| &c.processed_dir),
-            cfg.auto_transcribe.as_ref().map(|c| &c.processed_dir)
-        );
-        assert_eq!(
-            loaded
-                .auto_transcribe
+                .and_then(|c| c.watches.first())
+                .map(|watch| (&watch.input_dir, &watch.output_dir, &watch.processed_dir)),
+            cfg.auto_transcribe
                 .as_ref()
-                .map(|c| c.watches.len()),
-            cfg.auto_transcribe.as_ref().map(|c| c.watches.len())
+                .and_then(|c| c.watches.first())
+                .map(|watch| (&watch.input_dir, &watch.output_dir, &watch.processed_dir))
         );
         Ok(())
     }

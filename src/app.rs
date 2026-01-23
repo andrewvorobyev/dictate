@@ -715,10 +715,10 @@ fn run_auto_transcribe_watcher(
     config: AutoTranscribeConfig,
     tx: Sender<WorkerEvent>,
 ) -> Result<()> {
-    storage::ensure_dir(&config.processed_dir)?;
     for watch in &config.watches {
         storage::ensure_dir(&watch.input_dir)?;
         storage::ensure_dir(&watch.output_dir)?;
+        storage::ensure_dir(&watch.processed_dir)?;
     }
 
     enqueue_existing_files(&config, &tx)?;
@@ -754,7 +754,7 @@ fn enqueue_existing_files(config: &AutoTranscribeConfig, tx: &Sender<WorkerEvent
             .with_context(|| format!("read dir {}", watch.input_dir.display()))?;
         for entry in entries.flatten() {
             let path = entry.path();
-            enqueue_auto_path(&path, watch, &config.processed_dir, tx);
+            enqueue_auto_path(&path, watch, tx);
         }
     }
     Ok(())
@@ -768,14 +768,14 @@ fn handle_auto_event(event: NotifyEvent, config: &AutoTranscribeConfig, tx: &Sen
     for path in event.paths {
         for watch in &config.watches {
             if path.starts_with(&watch.input_dir) {
-                enqueue_auto_path(&path, watch, &config.processed_dir, tx);
+                enqueue_auto_path(&path, watch, tx);
                 break;
             }
         }
     }
 }
 
-fn enqueue_auto_path(path: &Path, watch: &WatchPair, processed_dir: &Path, tx: &Sender<WorkerEvent>) {
+fn enqueue_auto_path(path: &Path, watch: &WatchPair, tx: &Sender<WorkerEvent>) {
     if !is_m4a(path) {
         return;
     }
@@ -785,7 +785,7 @@ fn enqueue_auto_path(path: &Path, watch: &WatchPair, processed_dir: &Path, tx: &
     let spec = AutoJobSpec {
         input_path: path.to_path_buf(),
         output_dir: watch.output_dir.clone(),
-        processed_dir: processed_dir.to_path_buf(),
+        processed_dir: watch.processed_dir.clone(),
     };
     let _ = tx.send(WorkerEvent::AutoFileDetected(spec));
 }

@@ -45,15 +45,15 @@ vocabulary:
   - Dictate
   - Whisper
 auto_transcribe:
-  processed_dir: /Users/you/Dictate/processed
   watches:
     - input_dir: /Users/you/Dictate/inbox
       output_dir: /Users/you/Dictate/transcripts
+      processed_dir: /Users/you/Dictate/processed
 ```
 
 When `dictate` is running, it watches each `input_dir` for `.m4a` files, writes the
 transcript to the corresponding `output_dir` using the same filename with `.md`,
-and moves the source file into `processed_dir`.
+and moves the source file into that watch's `processed_dir`.
 
 Vocabulary entries are passed to the model as an initial prompt for both hotkey
 recordings and auto-transcribed files.
