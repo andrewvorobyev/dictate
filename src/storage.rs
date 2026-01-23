@@ -37,14 +37,28 @@ pub fn transcript_path_for_output_dir(input: &Path, output_dir: &Path) -> Result
         .file_stem()
         .context("input file has no filename")?
         .to_string_lossy();
-    Ok(output_dir.join(format!("{stem}.md")))
+    let safe = sanitize_filename_component(&stem);
+    Ok(output_dir.join(format!("{safe}.md")))
 }
 
 pub fn processed_path_for_input(input: &Path, processed_dir: &Path) -> Result<PathBuf> {
     let name = input
         .file_name()
         .context("input file has no filename")?;
-    Ok(processed_dir.join(name))
+    let safe = sanitize_filename_component(&name.to_string_lossy());
+    Ok(processed_dir.join(safe))
+}
+
+fn sanitize_filename_component(input: &str) -> String {
+    input
+        .chars()
+        .map(|ch| if is_illegal_filename_char(ch) { '-' } else { ch })
+        .collect()
+}
+
+fn is_illegal_filename_char(ch: char) -> bool {
+    matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+        || ch.is_ascii_control()
 }
 
 #[cfg(test)]
@@ -89,6 +103,26 @@ mod tests {
         let processed_dir = dir.path().join("processed");
         let out = processed_path_for_input(&input, &processed_dir)?;
         assert_eq!(out, processed_dir.join("sample.m4a"));
+        Ok(())
+    }
+
+    #[test]
+    fn transcript_path_for_output_dir_sanitizes_illegal_chars() -> Result<()> {
+        let dir = tempdir()?;
+        let input = dir.path().join("2026-01-22T16:19:59.m4a");
+        let output_dir = dir.path().join("out");
+        let out = transcript_path_for_output_dir(&input, &output_dir)?;
+        assert_eq!(out, output_dir.join("2026-01-22T16-19-59.md"));
+        Ok(())
+    }
+
+    #[test]
+    fn processed_path_for_input_sanitizes_illegal_chars() -> Result<()> {
+        let dir = tempdir()?;
+        let input = dir.path().join("clip:01.m4a");
+        let processed_dir = dir.path().join("processed");
+        let out = processed_path_for_input(&input, &processed_dir)?;
+        assert_eq!(out, processed_dir.join("clip-01.m4a"));
         Ok(())
     }
 }
