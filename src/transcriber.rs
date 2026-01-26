@@ -81,6 +81,19 @@ impl WhisperTranscriber {
             "resampled audio"
         );
         let mut samples_16k = samples_16k;
+        if let Some(vad) = prefilter_speech(&mut samples_16k, 16_000) {
+            tracing::debug!(
+                removed_samples = vad.removed_samples,
+                kept_samples = vad.kept_samples,
+                removed_sec = vad.removed_samples as f32 / 16_000.0,
+                segments = vad.segments,
+                threshold = vad.threshold,
+                noise_floor = vad.noise_floor,
+                keep_silence_ms = vad.keep_silence_ms,
+                pad_ms = vad.pad_ms,
+                "prefiltered non-speech"
+            );
+        }
         if let Some(trim) = trim_silence(&mut samples_16k, 16_000) {
             tracing::debug!(
                 trimmed_samples = trim.trimmed_samples,
@@ -175,15 +188,18 @@ impl WhisperTranscriber {
             let mut state = ctx
                 .create_state()
                 .context("create whisper state")?;
-            let mut params =
-                whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
+            let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::BeamSearch {
+                beam_size: 5,
+                patience: 1.0,
+            });
             params.set_n_threads(threads);
             params.set_suppress_blank(true);
             params.set_suppress_non_speech_tokens(true);
             params.set_temperature(0.0);
-            params.set_temperature_inc(0.0);
-            params.set_logprob_thold(-0.8);
-            params.set_entropy_thold(2.0);
+            params.set_temperature_inc(0.2);
+            params.set_logprob_thold(-1.0);
+            params.set_entropy_thold(2.4);
+            params.set_no_speech_thold(0.6);
             if let Some(prompt) = prompt {
                 params.set_initial_prompt(prompt);
             }
@@ -504,6 +520,147 @@ fn resample_to_16k(input: Vec<f32>, sample_rate: u32) -> Result<Vec<f32>> {
         SincFixedIn::<f32>::new(16_000.0 / sample_rate as f64, 1.0, params, input.len(), 1)?;
     let out = resampler.process(&[input], None)?;
     Ok(out.into_iter().next().unwrap_or_default())
+}
+
+struct VadResult {
+    removed_samples: usize,
+    kept_samples: usize,
+    segments: usize,
+    threshold: f32,
+    noise_floor: f32,
+    keep_silence_ms: usize,
+    pad_ms: usize,
+}
+
+fn prefilter_speech(samples: &mut Vec<f32>, sample_rate: u32) -> Option<VadResult> {
+    if samples.is_empty() || sample_rate == 0 {
+        return None;
+    }
+    let original_len = samples.len();
+    let frame_ms = 20usize;
+    let frame_len = (sample_rate as usize * frame_ms) / 1000;
+    if frame_len == 0 || original_len < frame_len * 2 {
+        return None;
+    }
+
+    let num_frames = (samples.len() + frame_len - 1) / frame_len;
+    if num_frames == 0 {
+        return None;
+    }
+
+    let mut energies = Vec::with_capacity(num_frames);
+    for i in 0..num_frames {
+        let start = i * frame_len;
+        let end = std::cmp::min(start + frame_len, samples.len());
+        if start >= end {
+            energies.push(0.0);
+            continue;
+        }
+        let mut sum = 0.0f32;
+        for &sample in &samples[start..end] {
+            sum += sample.abs();
+        }
+        energies.push(sum / (end - start) as f32);
+    }
+
+    let mut sorted = energies.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    let noise_idx = ((sorted.len() as f32 - 1.0) * 0.1).round() as usize;
+    let noise_floor = sorted[noise_idx.min(sorted.len() - 1)];
+    let threshold = (noise_floor * 2.5).max(0.002);
+
+    let min_speech_ms = 200usize;
+    let pad_ms = 120usize;
+    let keep_silence_ms = 800usize;
+    let min_speech_frames = (min_speech_ms + frame_ms - 1) / frame_ms;
+    let pad_frames = (pad_ms + frame_ms - 1) / frame_ms;
+    let keep_silence_frames = (keep_silence_ms + frame_ms - 1) / frame_ms;
+
+    let mut raw_segments: Vec<(usize, usize)> = Vec::new();
+    let mut current_start: Option<usize> = None;
+    for (idx, &energy) in energies.iter().enumerate() {
+        if energy >= threshold {
+            if current_start.is_none() {
+                current_start = Some(idx);
+            }
+        } else if let Some(start) = current_start.take() {
+            let end = idx.saturating_sub(1);
+            if end + 1 - start >= min_speech_frames {
+                raw_segments.push((start, end));
+            }
+        }
+    }
+    if let Some(start) = current_start.take() {
+        let end = num_frames.saturating_sub(1);
+        if end + 1 - start >= min_speech_frames {
+            raw_segments.push((start, end));
+        }
+    }
+
+    if raw_segments.is_empty() {
+        samples.clear();
+        return Some(VadResult {
+            removed_samples: original_len,
+            kept_samples: 0,
+            segments: 0,
+            threshold,
+            noise_floor,
+            keep_silence_ms,
+            pad_ms,
+        });
+    }
+
+    let mut padded: Vec<(usize, usize)> = Vec::with_capacity(raw_segments.len());
+    for (start, end) in raw_segments {
+        let start = start.saturating_sub(pad_frames);
+        let end = (end + pad_frames).min(num_frames.saturating_sub(1));
+        padded.push((start, end));
+    }
+
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in padded {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1 + keep_silence_frames {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+
+    if merged.len() == 1 && merged[0].0 == 0 && merged[0].1 + 1 >= num_frames {
+        return None;
+    }
+
+    let mut new_samples = Vec::with_capacity(original_len);
+    let insert_silence_ms = 120usize;
+    let insert_silence_len = (sample_rate as usize * insert_silence_ms) / 1000;
+    for (idx, (start_frame, end_frame)) in merged.iter().enumerate() {
+        let start_sample = (start_frame * frame_len).min(samples.len());
+        let end_sample = ((end_frame + 1) * frame_len).min(samples.len());
+        if start_sample < end_sample {
+            new_samples.extend_from_slice(&samples[start_sample..end_sample]);
+            if idx + 1 < merged.len() && insert_silence_len > 0 {
+                new_samples.resize(new_samples.len() + insert_silence_len, 0.0);
+            }
+        }
+    }
+
+    let kept_samples = new_samples.len();
+    let removed_samples = original_len.saturating_sub(kept_samples);
+    if removed_samples == 0 {
+        return None;
+    }
+    *samples = new_samples;
+    Some(VadResult {
+        removed_samples,
+        kept_samples,
+        segments: merged.len(),
+        threshold,
+        noise_floor,
+        keep_silence_ms,
+        pad_ms,
+    })
 }
 
 struct TrimResult {
