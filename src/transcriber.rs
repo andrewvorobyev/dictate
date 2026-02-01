@@ -570,7 +570,7 @@ fn prefilter_speech(samples: &mut Vec<f32>, sample_rate: u32) -> Option<VadResul
     let threshold = (noise_floor * 2.5).max(0.002);
 
     let min_speech_ms = 200usize;
-    let pad_ms = 120usize;
+    let pad_ms = 240usize;
     let keep_silence_ms = 800usize;
     let min_speech_frames = (min_speech_ms + frame_ms - 1) / frame_ms;
     let pad_frames = (pad_ms + frame_ms - 1) / frame_ms;
@@ -737,7 +737,7 @@ fn trim_silence(samples: &mut Vec<f32>, sample_rate: u32) -> Option<TrimResult> 
     let min_leading_silence_ms = 300usize;
     let min_trailing_silence_ms = 400usize;
     let pad_before_ms = 200usize;
-    let pad_after_ms = 120usize;
+    let pad_after_ms = 240usize;
 
     let min_leading_frames = (min_leading_silence_ms + frame_ms - 1) / frame_ms;
     let min_trailing_frames = (min_trailing_silence_ms + frame_ms - 1) / frame_ms;
