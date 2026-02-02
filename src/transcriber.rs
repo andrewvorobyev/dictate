@@ -532,6 +532,60 @@ struct VadResult {
     pad_ms: usize,
 }
 
+fn speech_median(energies: &[f32], threshold: f32) -> Option<f32> {
+    let mut speech: Vec<f32> = energies.iter().copied().filter(|&e| e >= threshold).collect();
+    if speech.len() < 3 {
+        return None;
+    }
+    speech.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    Some(speech[speech.len() / 2])
+}
+
+fn find_dynamic_tail_start(
+    energies: &[f32],
+    frame_ms: usize,
+    speech_ref: f32,
+) -> Option<usize> {
+    let num_frames = energies.len();
+    if num_frames == 0 || speech_ref <= 0.0 {
+        return None;
+    }
+    let window_ms = 200usize;
+    let min_tail_ms = 300usize;
+    let drop_ratio = 0.25f32;
+    let window_frames = ((window_ms + frame_ms - 1) / frame_ms)
+        .max(3)
+        .min(num_frames);
+    let min_tail_frames = (min_tail_ms + frame_ms - 1) / frame_ms;
+    if num_frames < window_frames + min_tail_frames {
+        return None;
+    }
+    let mut prefix = Vec::with_capacity(num_frames + 1);
+    prefix.push(0.0);
+    for &e in energies {
+        let last = *prefix.last().unwrap();
+        prefix.push(last + e);
+    }
+    let threshold = speech_ref * drop_ratio;
+    let mut tail_start: Option<usize> = None;
+    for i in (0..=num_frames - window_frames).rev() {
+        let sum = prefix[i + window_frames] - prefix[i];
+        let avg = sum / window_frames as f32;
+        if avg >= threshold {
+            tail_start = Some(i + window_frames);
+            break;
+        }
+    }
+    let Some(tail_start) = tail_start else {
+        return None;
+    };
+    let tail_frames = num_frames.saturating_sub(tail_start);
+    if tail_frames < min_tail_frames {
+        return None;
+    }
+    Some(tail_start)
+}
+
 fn prefilter_speech(samples: &mut Vec<f32>, sample_rate: u32) -> Option<VadResult> {
     if samples.is_empty() || sample_rate == 0 {
         return None;
@@ -568,6 +622,13 @@ fn prefilter_speech(samples: &mut Vec<f32>, sample_rate: u32) -> Option<VadResul
     let noise_idx = ((sorted.len() as f32 - 1.0) * 0.1).round() as usize;
     let noise_floor = sorted[noise_idx.min(sorted.len() - 1)];
     let threshold = (noise_floor * 2.5).max(0.002);
+    let speech_ref = speech_median(&energies, threshold);
+    let dynamic_tail_start =
+        speech_ref.and_then(|speech_ref| find_dynamic_tail_start(&energies, frame_ms, speech_ref));
+    let tail_window_ms = 800usize;
+    let tail_frames = (tail_window_ms + frame_ms - 1) / frame_ms;
+    let tail_start = num_frames.saturating_sub(tail_frames);
+    let tail_threshold = (noise_floor * 2.0).max(0.0015);
 
     let min_speech_ms = 200usize;
     let pad_ms = 240usize;
@@ -579,7 +640,12 @@ fn prefilter_speech(samples: &mut Vec<f32>, sample_rate: u32) -> Option<VadResul
     let mut raw_segments: Vec<(usize, usize)> = Vec::new();
     let mut current_start: Option<usize> = None;
     for (idx, &energy) in energies.iter().enumerate() {
-        if energy >= threshold {
+        let frame_threshold = if idx >= tail_start {
+            tail_threshold
+        } else {
+            threshold
+        };
+        if energy >= frame_threshold {
             if current_start.is_none() {
                 current_start = Some(idx);
             }
@@ -626,6 +692,15 @@ fn prefilter_speech(samples: &mut Vec<f32>, sample_rate: u32) -> Option<VadResul
             }
         }
         merged.push((start, end));
+    }
+
+    if let Some(tail_start) = dynamic_tail_start {
+        if let Some(last) = merged.last_mut() {
+            let tail_start = tail_start.max(last.1 + 1);
+            if tail_start > last.1 + 1 {
+                last.1 = tail_start.saturating_sub(1).min(num_frames.saturating_sub(1));
+            }
+        }
     }
 
     if merged.len() == 1 && merged[0].0 == 0 && merged[0].1 + 1 >= num_frames {
@@ -708,11 +783,23 @@ fn trim_silence(samples: &mut Vec<f32>, sample_rate: u32) -> Option<TrimResult> 
     let noise_idx = ((sorted.len() as f32 - 1.0) * 0.1).round() as usize;
     let noise_floor = sorted[noise_idx.min(sorted.len() - 1)];
     let threshold = (noise_floor * 2.5).max(0.002);
+    let speech_ref = speech_median(&energies, threshold);
+    let dynamic_tail_start =
+        speech_ref.and_then(|speech_ref| find_dynamic_tail_start(&energies, frame_ms, speech_ref));
+    let tail_window_ms = 800usize;
+    let tail_frames = (tail_window_ms + frame_ms - 1) / frame_ms;
+    let tail_start = num_frames.saturating_sub(tail_frames);
+    let tail_threshold = (noise_floor * 2.0).max(0.0015);
 
     let mut first_loud: Option<usize> = None;
     let mut last_loud: Option<usize> = None;
     for (idx, &energy) in energies.iter().enumerate() {
-        if energy >= threshold {
+        let frame_threshold = if idx >= tail_start {
+            tail_threshold
+        } else {
+            threshold
+        };
+        if energy >= frame_threshold {
             if first_loud.is_none() {
                 first_loud = Some(idx);
             }
@@ -745,18 +832,26 @@ fn trim_silence(samples: &mut Vec<f32>, sample_rate: u32) -> Option<TrimResult> 
     let pad_after_frames = (pad_after_ms + frame_ms - 1) / frame_ms;
 
     let leading_frames = first_loud;
-    let trailing_frames = num_frames.saturating_sub(last_loud + 1);
+    let mut trailing_frames = num_frames.saturating_sub(last_loud + 1);
 
     let start_frame = if leading_frames >= min_leading_frames {
         first_loud.saturating_sub(pad_before_frames)
     } else {
         0
     };
-    let end_frame = if trailing_frames >= min_trailing_frames {
+    let mut end_frame = if trailing_frames >= min_trailing_frames {
         (last_loud + 1 + pad_after_frames).min(num_frames)
     } else {
         num_frames
     };
+    if let Some(tail_start) = dynamic_tail_start {
+        let tail_start = tail_start.max(last_loud + 1);
+        let tail_frames = num_frames.saturating_sub(tail_start);
+        if tail_frames >= min_trailing_frames {
+            trailing_frames = tail_frames;
+            end_frame = (tail_start + pad_after_frames).min(num_frames);
+        }
+    }
 
     if start_frame == 0 && end_frame == num_frames {
         return None;
